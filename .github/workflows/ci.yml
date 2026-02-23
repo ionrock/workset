@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        emacs: ['29.4', '30.2', 'snapshot']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v6
+        with:
+          version: ${{ matrix.emacs }}
+
+      - name: Set up Eask
+        uses: emacs-eask/setup@v1
+
+      - name: Run CI
+        run: make ci
