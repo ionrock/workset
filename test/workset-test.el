@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'workset)
 
@@ -221,8 +222,11 @@
           ;; List should contain both the main repo and the worktree
           (let ((trees (workset-worktree-list repo-dir)))
             (should (>= (length trees) 2))
-            (should (cl-some (lambda (wt) (equal (plist-get wt :path) wt-dir))
-                             trees)))
+            (let ((wt-true (file-truename wt-dir)))
+              (should (cl-some (lambda (wt)
+                                 (equal (file-truename (plist-get wt :path))
+                                        wt-true))
+                               trees))))
           ;; Clean up worktree
           (workset-worktree-remove repo-dir wt-dir))
       (delete-directory tmpdir t))))

@@ -62,14 +62,14 @@ Returns a list of plists with :path, :head, and :branch keys."
       (cond
        ((string-prefix-p "worktree " line)
         (when current
-          (push (nreverse current) entries))
+          (push current entries))
         (setq current (list :path (substring line 9))))
        ((string-prefix-p "HEAD " line)
         (setq current (plist-put current :head (substring line 5))))
        ((string-prefix-p "branch " line)
         (setq current (plist-put current :branch (substring line 7))))))
     (when current
-      (push (nreverse current) entries))
+      (push current entries))
     (nreverse entries)))
 
 (defun workset-worktree-copy-files (source-dir target-dir patterns)
