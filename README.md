@@ -18,54 +18,82 @@ AI coding agents work best when each task has isolated state:
 
 `workset` standardizes that loop so you can spin up multiple agent tasks without shell clutter or branch collisions.
 
-## Core model
+## Installation
 
-Each workset maps to:
+### straight.el
 
-- A named worktree directory
-- A matching branch
-- A matching `vterm` session
-
-Think of it as: **task = branch + worktree + terminal**.
-
-## Typical workflow
-
-1. Create a workset for a task.
-2. `workset` creates (or links) a git worktree and branch.
-3. `workset` opens or focuses a `vterm` for that task.
-4. Run your AI agent inside that terminal.
-5. Commit/push when done.
-6. Remove/archive the workset when merged.
-
-## Example usage
-
-```bash
-# create a new task workspace
-workset create fix-login-bug
-
-# jump to an existing workspace terminal/worktree
-workset open fix-login-bug
-
-# list active worksets
-workset list
-
-# remove a completed workspace
-workset remove fix-login-bug
+```elisp
+(straight-use-package
+ '(workset :type git :host github :repo "eric/workset"))
 ```
 
-## Recommended setup
+### use-package (with straight)
 
-- Emacs with `vterm` installed and working
-- Git 2.5+ (worktree support)
-- A repository where you run `workset`
+```elisp
+(use-package workset
+  :straight (workset :type git :host github :repo "eric/workset")
+  :commands (workset workset-create workset-open workset-vterm workset-list workset-remove))
+```
 
-## Use cases
+### Manual
 
-- Running multiple AI agents on different tickets in parallel
-- Keeping experiments isolated without stashing
-- Fast branch switching without losing terminal context
+```elisp
+(add-to-list 'load-path "/path/to/workset")
+(require 'workset)
+```
 
-## Status
+## Configuration
 
-Initial project scaffolding. This repository currently documents the workflow and intent for `workset`.
+```elisp
+(setq workset-base-directory (expand-file-name "~/.workset"))
+(setq workset-project-backend 'auto)
+(setq workset-copy-patterns
+      '(".env" ".envrc" ".env.local"
+        "docker-compose.yml" "docker-compose.yaml"
+        ".tool-versions" ".node-version" ".python-version" ".ruby-version"))
+(setq workset-vterm-buffer-name-format "*workset: %r/%t<%n>*")
+(setq workset-branch-prefix "eric/")
+(setq workset-start-point "HEAD")
+```
 
+## Usage
+
+- `M-x workset` opens the transient menu
+- `M-x workset-create` creates a new workset
+- `M-x workset-open` switches to an existing workset
+- `M-x workset-vterm` opens an additional terminal
+- `M-x workset-list` lists active worksets
+- `M-x workset-remove` removes a workset
+
+## Development
+
+### Prerequisites
+
+- Emacs 29.1+
+- Eask
+
+Install Eask:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/emacs-eask/cli/master/install.sh | sh
+```
+
+### Running tests
+
+```bash
+make test
+```
+
+Or directly with Emacs:
+
+```bash
+emacs --batch -L . -l test/workset-test.el -f ert-run-tests-batch-and-exit
+```
+
+### Other targets
+
+```bash
+make compile
+make lint
+make checkdoc
+```
