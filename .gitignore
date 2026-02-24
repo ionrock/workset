@@ -1,5 +1,6 @@
 *.elc
 .eask/
+.workset-elpa/
 dist/
 *-autoloads.el
 *-pkg.el
