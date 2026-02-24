@@ -74,12 +74,6 @@ and %n with the terminal number."
   :type 'string
   :group 'workset)
 
-(defcustom workset-keymap-prefix "C-c w"
-  "Global key prefix for Workset commands."
-  :type 'string
-  :group 'workset
-  :set #'workset--set-keymap-prefix)
-
 ;;;; Internal state
 
 (defvar workset--active-worksets nil
@@ -106,6 +100,12 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
   (set-default symbol value)
   (when (and value (stringp value) (not (string-empty-p value)))
     (workset--install-keymap-prefix value)))
+
+(defcustom workset-keymap-prefix "C-c w"
+  "Global key prefix for Workset commands."
+  :type 'string
+  :group 'workset
+  :set #'workset--set-keymap-prefix)
 
 ;;;; Internal helpers
 
