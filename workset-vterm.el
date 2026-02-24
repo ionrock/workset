@@ -12,6 +12,8 @@
 
 ;;; Code:
 
+(require 'subr-x)
+
 (declare-function vterm-mode "vterm")
 
 (defun workset-vterm--format-buffer-name (format-string repo task index)
