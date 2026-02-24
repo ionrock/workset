@@ -25,6 +25,7 @@
 
 ;;; Code:
 
+(require 'subr-x)
 (require 'transient)
 
 ;;;; Customization
@@ -73,12 +74,38 @@ and %n with the terminal number."
   :type 'string
   :group 'workset)
 
+(defcustom workset-keymap-prefix "C-c w"
+  "Global key prefix for Workset commands."
+  :type 'string
+  :group 'workset
+  :set #'workset--set-keymap-prefix)
+
 ;;;; Internal state
 
 (defvar workset--active-worksets nil
   "Alist of active worksets.
 Each entry is (KEY . PLIST) where KEY is \"repo/task\" and PLIST
 contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
+
+(defvar workset-prefix-map (make-sparse-keymap)
+  "Keymap for Workset commands.")
+
+(defvar workset--keymap-installed nil
+  "Key prefix currently used for `workset-prefix-map'.")
+
+(defun workset--install-keymap-prefix (prefix)
+  "Install Workset keymap under PREFIX."
+  (let ((key (kbd prefix)))
+    (when workset--keymap-installed
+      (global-unset-key (kbd workset--keymap-installed)))
+    (global-set-key key workset-prefix-map)
+    (setq workset--keymap-installed prefix)))
+
+(defun workset--set-keymap-prefix (symbol value)
+  "Set SYMBOL to VALUE and update the Workset keymap binding."
+  (set-default symbol value)
+  (when (and value (stringp value) (not (string-empty-p value)))
+    (workset--install-keymap-prefix value)))
 
 ;;;; Internal helpers
 
@@ -121,6 +148,13 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
 (require 'workset-vterm)
 
 ;;;; Interactive commands
+
+(define-key workset-prefix-map (kbd "w") #'workset)
+(define-key workset-prefix-map (kbd "c") #'workset-create)
+(define-key workset-prefix-map (kbd "o") #'workset-open)
+(define-key workset-prefix-map (kbd "t") #'workset-vterm)
+(define-key workset-prefix-map (kbd "l") #'workset-list)
+(define-key workset-prefix-map (kbd "r") #'workset-remove)
 
 ;;;###autoload
 (defun workset-create ()
@@ -252,6 +286,8 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
    ("l" "List worksets"   workset-list)
    ("t" "Open terminal"   workset-vterm)
    ("r" "Remove workset"  workset-remove)])
+
+(workset--install-keymap-prefix workset-keymap-prefix)
 
 (provide 'workset)
 ;;; workset.el ends here
