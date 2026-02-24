@@ -24,14 +24,14 @@ AI coding agents work best when each task has isolated state:
 
 ```elisp
 (straight-use-package
- '(workset :type git :host github :repo "eric/workset"))
+ '(workset :type git :host github :repo "ionrock/workset"))
 ```
 
 ### use-package (with straight)
 
 ```elisp
 (use-package workset
-  :straight (workset :type git :host github :repo "eric/workset")
+  :straight (workset :type git :host github :repo "ionrock/workset")
   :commands (workset workset-create workset-open workset-vterm workset-list workset-remove))
 ```
 
@@ -64,6 +64,23 @@ AI coding agents work best when each task has isolated state:
 - `M-x workset-vterm` opens an additional terminal
 - `M-x workset-list` lists active worksets
 - `M-x workset-remove` removes a workset
+
+### Keybindings
+
+Workset installs a global prefix map at `C-c w` by default.
+
+- `C-c w w` → `workset` (transient menu)
+- `C-c w c` → `workset-create`
+- `C-c w o` → `workset-open`
+- `C-c w t` → `workset-vterm`
+- `C-c w l` → `workset-list`
+- `C-c w r` → `workset-remove`
+
+To change the prefix:
+
+```elisp
+(setq workset-keymap-prefix "C-c w")
+```
 
 ## Development
 
