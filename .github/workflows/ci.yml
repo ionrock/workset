@@ -22,7 +22,7 @@ jobs:
           version: ${{ matrix.emacs }}
 
       - name: Set up Eask
-        uses: emacs-eask/setup@master
+        uses: emacs-eask/setup-eask@master
 
       - name: Run CI
         run: make ci
