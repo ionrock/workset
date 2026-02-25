@@ -18,6 +18,8 @@
 ;; Usage:
 ;;   M-x workset          - Open the transient menu
 ;;   M-x workset-create   - Create a new workset
+;;   M-x workset-load     - Load an existing branch into a workset
+;;   M-x workset-load-pr  - Load a GitHub PR into a workset
 ;;   M-x workset-open     - Switch to an existing workset
 ;;   M-x workset-vterm    - Open another terminal in a workset
 ;;   M-x workset-list     - List active worksets
@@ -155,6 +157,8 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
 (define-key workset-prefix-map (kbd "t") #'workset-vterm)
 (define-key workset-prefix-map (kbd "l") #'workset-list)
 (define-key workset-prefix-map (kbd "r") #'workset-remove)
+(define-key workset-prefix-map (kbd "b") #'workset-load)
+(define-key workset-prefix-map (kbd "p") #'workset-load-pr)
 
 ;;;###autoload
 (defun workset-create ()
@@ -274,14 +278,124 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
     (workset--remove key)
     (message "Removed workset %s" key)))
 
+;;;; Private helpers for loading branches
+
+(defun workset--load-branch (repo-root branch task)
+  "Load BRANCH into a workset for REPO-ROOT with task name TASK.
+Handles remote-tracking refs by creating a local tracking branch."
+  (let* ((repo-name (workset--repo-name repo-root))
+         (key (workset--key repo-name task))
+         (wt-path (workset--worktree-directory repo-name task)))
+    (when (string-empty-p task)
+      (user-error "Task name cannot be empty"))
+    (when (workset--get key)
+      (user-error "Workset %s already exists" key))
+    (if (file-directory-p wt-path)
+        (unless (yes-or-no-p (format "Worktree directory %s already exists.  Use it? " wt-path))
+          (user-error "Aborted"))
+      (let ((default-directory repo-root))
+        (make-directory (file-name-directory wt-path) t)
+        (if (string-match-p "/" branch)
+            ;; Remote-tracking branch: create local tracking branch
+            (let* ((local-name (workset-worktree--task-from-branch branch))
+                   (local-branch (concat workset-branch-prefix local-name))
+                   (exit-code (call-process "git" nil nil nil
+                                            "worktree" "add" "--track"
+                                            "-b" local-branch wt-path branch)))
+              (unless (zerop exit-code)
+                ;; Branch may already exist locally; try without -b
+                (let ((exit-code2 (call-process "git" nil nil nil
+                                                "worktree" "add" wt-path local-branch)))
+                  (unless (zerop exit-code2)
+                    (error "Failed to create worktree at %s for branch %s" wt-path branch)))))
+          ;; Local branch
+          (let ((exit-code (call-process "git" nil nil nil
+                                         "worktree" "add" wt-path branch)))
+            (unless (zerop exit-code)
+              (error "Failed to create worktree at %s for branch %s" wt-path branch))))))
+    (workset-worktree-copy-files repo-root wt-path workset-copy-patterns)
+    (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
+      (workset--put key
+                    (list :repo-root repo-root
+                          :worktree-path wt-path
+                          :branch branch
+                          :vterm-buffers (list buf)))
+      (message "Loaded workset %s" key))))
+
+;;;; GitHub helpers
+
+(defun workset--gh-list-prs (repo-root)
+  "List open PRs in REPO-ROOT using `gh'.
+Returns an alist of (\"#N: title\" . \"N\")."
+  (let ((default-directory repo-root))
+    (with-temp-buffer
+      (let ((exit-code (call-process "gh" nil t nil
+                                     "pr" "list" "--state" "open"
+                                     "--json" "number,title"
+                                     "--jq" ".[] | \"\\(.number)\\t\\(.title)\"")))
+        (unless (zerop exit-code)
+          (error "Failed to list PRs (is `gh' installed and authenticated?)"))
+        (let ((result nil))
+          (dolist (line (split-string (buffer-string) "\n" t))
+            (when (string-match "\\`\\([0-9]+\\)\t\\(.*\\)" line)
+              (let ((num (match-string 1 line))
+                    (title (match-string 2 line)))
+                (push (cons (format "#%s: %s" num title) num) result))))
+          (nreverse result))))))
+
+(defun workset--gh-pr-branch (repo-root pr-number)
+  "Get the head branch name for PR-NUMBER in REPO-ROOT."
+  (let ((default-directory repo-root))
+    (with-temp-buffer
+      (let ((exit-code (call-process "gh" nil t nil
+                                     "pr" "view" pr-number
+                                     "--json" "headRefName"
+                                     "--jq" ".headRefName")))
+        (unless (zerop exit-code)
+          (error "Failed to get branch for PR #%s" pr-number))
+        (string-trim (buffer-string))))))
+
+(defun workset--git-fetch-branch (repo-root branch)
+  "Fetch BRANCH from origin in REPO-ROOT.  Non-fatal on failure."
+  (let ((default-directory repo-root))
+    (call-process "git" nil nil nil "fetch" "origin" branch)))
+
+;;;; Load commands
+
+;;;###autoload
+(defun workset-load ()
+  "Load an existing branch into a new workset."
+  (interactive)
+  (let* ((repo-root (workset-project-select))
+         (branches (workset-worktree-list-branches repo-root))
+         (branch (completing-read "Branch: " branches nil t))
+         (task (workset-worktree--task-from-branch branch workset-branch-prefix)))
+    (workset--load-branch repo-root branch task)))
+
+;;;###autoload
+(defun workset-load-pr ()
+  "Load a GitHub pull request into a new workset."
+  (interactive)
+  (let* ((repo-root (workset-project-select))
+         (prs (workset--gh-list-prs repo-root))
+         (_ (unless prs (user-error "No open pull requests found")))
+         (choice (completing-read "Pull request: " prs nil t))
+         (pr-number (cdr (assoc choice prs)))
+         (branch (workset--gh-pr-branch repo-root pr-number)))
+    (workset--git-fetch-branch repo-root branch)
+    (let ((task (workset-worktree--task-from-branch branch workset-branch-prefix)))
+      (workset--load-branch repo-root (concat "origin/" branch) task))))
+
 ;;;; Transient menu
 
 ;;;###autoload (autoload 'workset "workset" nil t)
 (transient-define-prefix workset ()
   "Workset: coordinated worktree + terminal workspaces."
   ["Create & Open"
-   ("c" "Create workset"  workset-create)
-   ("o" "Open workset"    workset-open)]
+   ("c" "Create workset"     workset-create)
+   ("o" "Open workset"       workset-open)
+   ("b" "Load branch"        workset-load)
+   ("p" "Load pull request"  workset-load-pr)]
   ["Manage"
    ("l" "List worksets"   workset-list)
    ("t" "Open terminal"   workset-vterm)

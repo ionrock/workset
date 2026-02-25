@@ -93,5 +93,37 @@ Only copies files that don't already exist in TARGET-DIR."
   "Return non-nil if PATTERN contains glob characters."
   (string-match-p "[*?\\[]" pattern))
 
+(defun workset-worktree-list-branches (repo-root)
+  "Return a deduplicated list of branch names for REPO-ROOT.
+Runs `git branch --all --format=%(refname:short)' and strips
+remote prefixes for deduplication."
+  (let ((default-directory repo-root))
+    (with-temp-buffer
+      (let ((exit-code (call-process "git" nil t nil
+                                     "branch" "--all"
+                                     "--format=%(refname:short)")))
+        (unless (zerop exit-code)
+          (error "Failed to list branches in %s" repo-root))
+        (let ((branches nil))
+          (dolist (line (split-string (buffer-string) "\n" t))
+            (let ((name (string-trim line)))
+              (unless (string-suffix-p "/HEAD" name)
+                (push name branches))))
+          (delete-dups (nreverse branches)))))))
+
+(defun workset-worktree--task-from-branch (branch &optional branch-prefix)
+  "Derive a task name from BRANCH by stripping remote and BRANCH-PREFIX.
+Strips leading `origin/', `remotes/origin/' then BRANCH-PREFIX."
+  (let ((name branch))
+    (when (string-prefix-p "remotes/" name)
+      (setq name (replace-regexp-in-string "\\`remotes/[^/]+/" "" name)))
+    (when (string-prefix-p "origin/" name)
+      (setq name (substring name (length "origin/"))))
+    (when (and branch-prefix
+               (not (string-empty-p branch-prefix))
+               (string-prefix-p branch-prefix name))
+      (setq name (substring name (length branch-prefix))))
+    name))
+
 (provide 'workset-worktree)
 ;;; workset-worktree.el ends here

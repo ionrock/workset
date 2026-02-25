@@ -231,5 +231,72 @@
           (workset-worktree-remove repo-dir wt-dir))
       (delete-directory tmpdir t))))
 
+;;;; Branch helper tests
+
+(ert-deftest workset-test-task-from-branch ()
+  "Test deriving task name from branch."
+  ;; Local branch, no prefix
+  (should (equal (workset-worktree--task-from-branch "fix-bug") "fix-bug"))
+  ;; Remote branch
+  (should (equal (workset-worktree--task-from-branch "origin/fix-bug") "fix-bug"))
+  ;; remotes/origin/ prefix
+  (should (equal (workset-worktree--task-from-branch "remotes/origin/fix-bug") "fix-bug"))
+  ;; With branch prefix
+  (should (equal (workset-worktree--task-from-branch "eric/fix-bug" "eric/") "fix-bug"))
+  ;; Remote + branch prefix
+  (should (equal (workset-worktree--task-from-branch "origin/eric/fix-bug" "eric/") "fix-bug"))
+  ;; No match for prefix — keep as-is
+  (should (equal (workset-worktree--task-from-branch "other/fix-bug" "eric/") "other/fix-bug")))
+
+(ert-deftest workset-test-gh-list-prs-parse ()
+  "Test PR list parsing with stubbed call-process."
+  (cl-letf (((symbol-function 'call-process)
+             (lambda (_program _infile buffer &rest _args)
+               (when buffer
+                 (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                   (insert "42\tFix login bug\n7\tAdd dark mode\n")))
+               0)))
+    (let ((result (workset--gh-list-prs "/tmp/fake-repo")))
+      (should (equal (length result) 2))
+      (should (equal (car (nth 0 result)) "#42: Fix login bug"))
+      (should (equal (cdr (nth 0 result)) "42"))
+      (should (equal (car (nth 1 result)) "#7: Add dark mode"))
+      (should (equal (cdr (nth 1 result)) "7")))))
+
+(ert-deftest workset-test-gh-pr-branch ()
+  "Test PR branch lookup with stubbed call-process."
+  (cl-letf (((symbol-function 'call-process)
+             (lambda (_program _infile buffer &rest _args)
+               (when buffer
+                 (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                   (insert "feature/cool-thing\n")))
+               0)))
+    (should (equal (workset--gh-pr-branch "/tmp/fake-repo" "42")
+                   "feature/cool-thing"))))
+
+(ert-deftest workset-test-list-branches ()
+  "Integration test: list branches in a temp git repo."
+  (let* ((tmpdir (make-temp-file "workset-test-branches-" t))
+         (repo-dir (expand-file-name "repo" tmpdir)))
+    (unwind-protect
+        (progn
+          (make-directory repo-dir t)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "init")
+            (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+            (call-process "git" nil nil nil "config" "user.name" "Test")
+            (with-temp-file (expand-file-name "README" repo-dir)
+              (insert "test\n"))
+            (call-process "git" nil nil nil "add" ".")
+            (call-process "git" nil nil nil "commit" "-m" "init")
+            (call-process "git" nil nil nil "branch" "feature-a")
+            (call-process "git" nil nil nil "branch" "feature-b"))
+          (let ((branches (workset-worktree-list-branches repo-dir)))
+            (should (member "feature-a" branches))
+            (should (member "feature-b" branches))
+            ;; main or master should be present
+            (should (cl-some (lambda (b) (member b '("main" "master"))) branches))))
+      (delete-directory tmpdir t))))
+
 (provide 'workset-test)
 ;;; workset-test.el ends here
