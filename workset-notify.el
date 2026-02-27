@@ -1,0 +1,216 @@
+;;; workset-notify.el --- Vterm notifications for workset  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Eric
+
+;; Author: Eric
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+
+;; Detect agent output in vterm buffers and notify via modeline/messages.
+
+;;; Code:
+
+(require 'seq)
+(require 'subr-x)
+
+(defgroup workset-notify nil
+  "Notifications for workset vterm buffers."
+  :group 'workset
+  :prefix "workset-notify-")
+
+(defcustom workset-notify-enabled t
+  "Whether to enable notifications in workset vterm buffers."
+  :type 'boolean
+  :group 'workset-notify)
+
+(defcustom workset-notify-input-patterns
+  '("\\bawaiting your input\\b"
+    "\\bneed your input\\b"
+    "\\bplease respond\\b"
+    "\\benter to continue\\b"
+    "\\bpress (enter|return) to continue\\b")
+  "Regex patterns that indicate an agent is waiting for user input."
+  :type '(repeat string)
+  :group 'workset-notify)
+
+(defcustom workset-notify-done-patterns
+  '("\\ball done\\b"
+    "\\btask complete\\b"
+    "\\bfinished\\b"
+    "\\bcompleted\\b"
+    "\\bdone\\b")
+  "Regex patterns that indicate an agent is done."
+  :type '(repeat string)
+  :group 'workset-notify)
+
+(defcustom workset-notify-notify-states '(needs-input done)
+  "States that should trigger Emacs notifications."
+  :type '(repeat symbol)
+  :group 'workset-notify)
+
+(defcustom workset-notify-method 'modeline
+  "Notification method to use when state changes."
+  :type '(choice (const :tag "Modeline only" modeline)
+                 (const :tag "Modeline + message" modeline-and-message)
+                 (const :tag "Modeline + warning" modeline-and-warning))
+  :group 'workset-notify)
+
+(defcustom workset-notify-max-output 2000
+  "Max chars of recent output to keep for pattern matching."
+  :type 'integer
+  :group 'workset-notify)
+
+(defcustom workset-notify-clear-commands
+  '(vterm-self-insert
+    vterm-send-return
+    vterm-send-tab
+    vterm-send-backspace
+    vterm-send-C-c
+    vterm-send-C-d
+    vterm-send-C-u
+    vterm-send-C-w)
+  "Commands that clear a pending input notification."
+  :type '(repeat symbol)
+  :group 'workset-notify)
+
+(defface workset-notify-needs-input-face
+  '((t :weight bold :foreground "orange"))
+  "Face for input-needed modeline indicator."
+  :group 'workset-notify)
+
+(defface workset-notify-done-face
+  '((t :weight bold :foreground "green"))
+  "Face for done modeline indicator."
+  :group 'workset-notify)
+
+(defface workset-notify-working-face
+  '((t :foreground "deep sky blue"))
+  "Face for working modeline indicator."
+  :group 'workset-notify)
+
+(defvar workset-notify--window-hook-installed nil)
+
+(defvar-local workset-notify--state nil)
+(defvar-local workset-notify--recent-output "")
+(defvar-local workset-notify--mode-line-cell nil)
+
+(defun workset-notify--matches-any (patterns text)
+  "Return non-nil if any regex in PATTERNS matches TEXT."
+  (seq-some (lambda (re) (string-match-p re text)) patterns))
+
+(defun workset-notify--match-state (text)
+  "Return state symbol for TEXT based on pattern matches."
+  (cond
+   ((workset-notify--matches-any workset-notify-input-patterns text) 'needs-input)
+   ((workset-notify--matches-any workset-notify-done-patterns text) 'done)
+   (t nil)))
+
+(defun workset-notify--trim-output (text)
+  "Trim TEXT to the last `workset-notify-max-output' chars."
+  (let ((len (length text)))
+    (if (<= len workset-notify-max-output)
+        text
+      (substring text (- len workset-notify-max-output)))))
+
+(defun workset-notify--mode-line ()
+  "Return modeline segment based on `workset-notify--state'."
+  (pcase workset-notify--state
+    ('needs-input (propertize " [Input]" 'face 'workset-notify-needs-input-face))
+    ('done (propertize " [Done]" 'face 'workset-notify-done-face))
+    ('working (propertize " [Working]" 'face 'workset-notify-working-face))
+    (_ "")))
+
+(defun workset-notify--ensure-modeline ()
+  "Ensure the modeline segment is present in the current buffer."
+  (unless workset-notify--mode-line-cell
+    (setq workset-notify--mode-line-cell '(:eval (workset-notify--mode-line))))
+  (unless (member workset-notify--mode-line-cell mode-line-format)
+    (setq-local mode-line-format
+                (append mode-line-format (list workset-notify--mode-line-cell)))))
+
+(defun workset-notify--emit (state)
+  "Emit Emacs notifications for STATE if configured."
+  (when (and workset-notify-enabled (memq state workset-notify-notify-states))
+    (let ((label (pcase state
+                   ('needs-input "needs input")
+                   ('done "is done")
+                   (_ nil))))
+      (when label
+        (pcase workset-notify-method
+          ('modeline nil)
+          ('modeline-and-message
+           (message "Workset: %s %s" (buffer-name) label))
+          ('modeline-and-warning
+           (display-warning 'workset (format "Workset: %s %s" (buffer-name) label)
+                            :warning)))))))
+
+(defun workset-notify--set-state (state)
+  "Set notification STATE and update UI."
+  (unless (eq workset-notify--state state)
+    (setq workset-notify--state state)
+    (force-mode-line-update)
+    (workset-notify--emit state)))
+
+(defun workset-notify--output-filter (output)
+  "Filter vterm OUTPUT to detect agent state."
+  (when workset-notify-mode
+    (setq workset-notify--recent-output
+          (workset-notify--trim-output
+           (concat workset-notify--recent-output output)))
+    (let ((matched (workset-notify--match-state workset-notify--recent-output)))
+      (cond
+       (matched (workset-notify--set-state matched))
+       ((eq workset-notify--state 'done)
+        (workset-notify--set-state 'working))
+       ((and (not (eq workset-notify--state 'needs-input))
+             (not (eq workset-notify--state 'working)))
+        (workset-notify--set-state 'working)))))
+  output)
+
+(defun workset-notify--maybe-clear-on-command ()
+  "Clear pending input state on user commands."
+  (when (and (eq workset-notify--state 'needs-input)
+             (memq this-command workset-notify-clear-commands))
+    (workset-notify--set-state 'working)))
+
+(defun workset-notify--window-selection-change (_window)
+  "Clear pending input state when a notified buffer is focused."
+  (let ((buf (window-buffer (selected-window))))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when (and workset-notify-mode
+                   (eq workset-notify--state 'needs-input))
+          (workset-notify--set-state 'working))))))
+
+(defun workset-notify--ensure-window-hook ()
+  "Install the global window selection hook once."
+  (unless workset-notify--window-hook-installed
+    (add-hook 'window-selection-change-functions
+              #'workset-notify--window-selection-change)
+    (setq workset-notify--window-hook-installed t)))
+
+;;;###autoload
+(define-minor-mode workset-notify-mode
+  "Minor mode to notify on agent output in vterm buffers."
+  :init-value nil
+  :lighter ""
+  (if workset-notify-mode
+      (progn
+        (setq-local workset-notify--state nil)
+        (setq-local workset-notify--recent-output "")
+        (workset-notify--ensure-modeline)
+        (workset-notify--ensure-window-hook)
+        (add-hook 'vterm-output-filter-functions #'workset-notify--output-filter nil t)
+        (add-hook 'post-command-hook #'workset-notify--maybe-clear-on-command nil t))
+    (remove-hook 'vterm-output-filter-functions #'workset-notify--output-filter t)
+    (remove-hook 'post-command-hook #'workset-notify--maybe-clear-on-command t)))
+
+;;;###autoload
+(defun workset-notify-attach ()
+  "Enable `workset-notify-mode' in the current buffer if appropriate."
+  (when (and workset-notify-enabled (derived-mode-p 'vterm-mode))
+    (workset-notify-mode 1)))
+
+(provide 'workset-notify)
+;;; workset-notify.el ends here

@@ -11,7 +11,7 @@ compile:
 ifeq ($(HAS_EASK),yes)
 	$(EASK) compile
 else
-	$(EMACS) --batch -L . -f batch-byte-compile workset.el workset-project.el workset-worktree.el workset-vterm.el
+	$(EMACS) --batch -L . -f batch-byte-compile workset.el workset-project.el workset-worktree.el workset-vterm.el workset-notify.el
 endif
 
 test:
@@ -28,7 +28,7 @@ else
 	$(EMACS) --batch -L . -f checkdoc-file workset.el
 	$(EMACS) --batch -L . -f checkdoc-file workset-project.el
 	$(EMACS) --batch -L . -f checkdoc-file workset-worktree.el
-	$(EMACS) --batch -L . -f checkdoc-file workset-vterm.el
+	$(EMACS) --batch -L . -f checkdoc-file workset-vterm.el workset-notify.el
 endif
 
 lint:

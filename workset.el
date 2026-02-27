@@ -148,6 +148,7 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
 (require 'workset-project)
 (require 'workset-worktree)
 (require 'workset-vterm)
+(require 'workset-notify)
 
 ;;;; Interactive commands
 

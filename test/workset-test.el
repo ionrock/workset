@@ -66,6 +66,14 @@
     (should (equal (sort (workset--active-keys) #'string<)
                    '("r/a" "r/b")))))
 
+(ert-deftest workset-test-notify-match-state ()
+  "Test notification pattern matching."
+  (let ((workset-notify-input-patterns '("input please"))
+        (workset-notify-done-patterns '("all done")))
+    (should (eq (workset-notify--match-state "input please") 'needs-input))
+    (should (eq (workset-notify--match-state "all done") 'done))
+    (should-not (workset-notify--match-state "still working"))))
+
 ;;;; vterm buffer naming tests
 
 (ert-deftest workset-test-format-buffer-name ()

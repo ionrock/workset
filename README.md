@@ -54,6 +54,12 @@ AI coding agents work best when each task has isolated state:
 (setq workset-vterm-buffer-name-format "*workset: %r/%t<%n>*")
 (setq workset-branch-prefix "eric/")
 (setq workset-start-point "HEAD")
+(setq workset-notify-enabled t)
+(setq workset-notify-method 'modeline-and-message)
+(setq workset-notify-input-patterns
+      '("\\bawaiting your input\\b"
+        "\\bneed your input\\b"
+        "\\bplease respond\\b"))
 ```
 
 ## Usage
