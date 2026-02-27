@@ -234,25 +234,57 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
 
 ;;;###autoload
 (defun workset-list ()
-  "Display active worksets in a temporary buffer."
+  "Display active worksets and repo worktrees in a temporary buffer.
+Shows active worksets first, then all git worktrees for the
+repository at `default-directory' (if any)."
   (interactive)
-  (let ((keys (workset--active-keys)))
-    (if (not keys)
-        (message "No active worksets")
+  (let ((keys (workset--active-keys))
+        (repo-root (workset--git-repo-root)))
+    (if (and (not keys) (not repo-root))
+        (message "No active worksets and not in a git repo")
       (with-output-to-temp-buffer "*workset-list*"
-        (dolist (key keys)
-          (let* ((ws (workset--get key))
-                 (wt-path (plist-get ws :worktree-path))
-                 (branch (plist-get ws :branch))
-                 (parts (split-string key "/"))
-                 (repo-name (car parts))
-                 (task (mapconcat #'identity (cdr parts) "/"))
-                 (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
-                 (alive (file-directory-p wt-path)))
-            (princ (format "%s\n  branch:   %s\n  worktree: %s%s\n  terminals: %d\n\n"
-                           key branch wt-path
-                           (if alive "" " [STALE]")
-                           (length live-bufs)))))))))
+        ;; Active worksets
+        (when keys
+          (princ "Active Worksets\n")
+          (princ (make-string 40 ?─))
+          (princ "\n")
+          (dolist (key keys)
+            (let* ((ws (workset--get key))
+                   (wt-path (plist-get ws :worktree-path))
+                   (branch (plist-get ws :branch))
+                   (parts (split-string key "/"))
+                   (repo-name (car parts))
+                   (task (mapconcat #'identity (cdr parts) "/"))
+                   (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
+                   (alive (file-directory-p wt-path)))
+              (princ (format "%s\n  branch:   %s\n  worktree: %s%s\n  terminals: %d\n\n"
+                             key branch wt-path
+                             (if alive "" " [STALE]")
+                             (length live-bufs))))))
+        ;; Repo worktrees
+        (when repo-root
+          (let ((worktrees (workset-worktree-list repo-root))
+                (repo-name (workset--repo-name repo-root)))
+            (when worktrees
+              (when keys (princ "\n"))
+              (princ (format "Git Worktrees for %s\n" repo-name))
+              (princ (make-string 40 ?─))
+              (princ "\n")
+              (dolist (wt worktrees)
+                (let* ((path (plist-get wt :path))
+                       (branch (or (plist-get wt :branch) "(detached)"))
+                       (head (plist-get wt :head))
+                       (short-head (if head (substring head 0 (min 8 (length head))) "?")))
+                  (princ (format "%s\n  branch: %s\n  path:   %s\n\n"
+                                 short-head branch path)))))))))))
+
+(defun workset--git-repo-root ()
+  "Return the git repository root for `default-directory', or nil."
+  (let ((default-directory default-directory))
+    (with-temp-buffer
+      (when (zerop (call-process "git" nil t nil
+                                 "rev-parse" "--show-toplevel"))
+        (string-trim (buffer-string))))))
 
 ;;;###autoload
 (defun workset-remove ()
