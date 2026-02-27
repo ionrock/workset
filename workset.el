@@ -189,28 +189,40 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
 
 ;;;###autoload
 (defun workset-open ()
-  "Switch to an existing workset's vterm, creating one if all are dead."
+  "Switch to an existing workset's vterm, creating one if all are dead.
+Also discovers on-disk worktrees for the current repo that are not
+yet tracked as active worksets."
   (interactive)
-  (let* ((keys (workset--active-keys))
-         (_ (unless keys (user-error "No active worksets")))
-         (key (completing-read "Open workset: " keys nil t))
-         (ws (workset--get key))
-         (wt-path (plist-get ws :worktree-path)))
-    (unless (file-directory-p wt-path)
-      (workset--remove key)
-      (user-error "Worktree %s no longer exists; workset removed" wt-path))
-    (let* ((parts (split-string key "/"))
-           (repo-name (car parts))
-           (task (mapconcat #'identity (cdr parts) "/"))
-           (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task)))
-      (if live-bufs
-          (progn
-            (pop-to-buffer-same-window (car live-bufs))
-            (setq ws (plist-put ws :vterm-buffers live-bufs)))
-        ;; All vterms killed; create a fresh one
-        (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
-          (setq ws (plist-put ws :vterm-buffers (list buf)))))
-      (workset--put key ws))))
+  (let* ((active-keys (workset--active-keys))
+         (repo-root (workset--git-repo-root))
+         (disk-worktrees (workset--discover-worktrees repo-root))
+         (all-keys (delete-dups (append active-keys (mapcar #'car disk-worktrees))))
+         (_ (unless all-keys (user-error "No active worksets or repo worktrees")))
+         (key (completing-read "Open workset: " all-keys nil t))
+         (ws (workset--get key)))
+    ;; If not already active, register from on-disk worktree
+    (unless ws
+      (let ((disk-entry (assoc key disk-worktrees)))
+        (unless disk-entry
+          (user-error "Workset %s not found" key))
+        (setq ws (cdr disk-entry))
+        (workset--put key ws)))
+    (let ((wt-path (plist-get ws :worktree-path)))
+      (unless (file-directory-p wt-path)
+        (workset--remove key)
+        (user-error "Worktree %s no longer exists; workset removed" wt-path))
+      (let* ((parts (split-string key "/"))
+             (repo-name (car parts))
+             (task (mapconcat #'identity (cdr parts) "/"))
+             (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task)))
+        (if live-bufs
+            (progn
+              (pop-to-buffer-same-window (car live-bufs))
+              (setq ws (plist-put ws :vterm-buffers live-bufs)))
+          ;; All vterms killed; create a fresh one
+          (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
+            (setq ws (plist-put ws :vterm-buffers (list buf)))))
+        (workset--put key ws)))))
 
 ;;;###autoload
 (defun workset-vterm ()
@@ -285,6 +297,32 @@ repository at `default-directory' (if any)."
       (when (zerop (call-process "git" nil t nil
                                  "rev-parse" "--show-toplevel"))
         (string-trim (buffer-string))))))
+
+(defun workset--discover-worktrees (repo-root)
+  "Return an alist of (KEY . PLIST) for on-disk worktrees in REPO-ROOT.
+Excludes the main worktree (REPO-ROOT itself).  Returns nil if
+REPO-ROOT is nil or has no linked worktrees."
+  (when repo-root
+    (let ((repo-name (workset--repo-name repo-root))
+          (repo-truename (file-truename repo-root))
+          (result nil))
+      (dolist (wt (workset-worktree-list repo-root))
+        (let ((wt-path (plist-get wt :path)))
+          ;; Skip the main worktree
+          (unless (equal (file-truename wt-path) repo-truename)
+            (let* ((branch-ref (plist-get wt :branch))
+                   (branch (if branch-ref
+                               (replace-regexp-in-string
+                                "\\`refs/heads/" "" branch-ref)
+                             ""))
+                   (task (workset-worktree--task-from-branch
+                          branch workset-branch-prefix))
+                   (key (workset--key repo-name task)))
+              (push (cons key (list :repo-root repo-root
+                                    :worktree-path wt-path
+                                    :branch branch))
+                    result)))))
+      (nreverse result))))
 
 ;;;###autoload
 (defun workset-remove ()
