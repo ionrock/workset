@@ -60,6 +60,8 @@ AI coding agents work best when each task has isolated state:
       '("\\bawaiting your input\\b"
         "\\bneed your input\\b"
         "\\bplease respond\\b"))
+(setq workset-notify-idle-seconds 10)
+(setq workset-notify-debounce-seconds 0.5)
 ```
 
 ## Usage

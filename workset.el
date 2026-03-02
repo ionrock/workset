@@ -30,6 +30,10 @@
 (require 'subr-x)
 (require 'transient)
 
+(let ((workset--dir (file-name-directory (or load-file-name buffer-file-name))))
+  (when workset--dir
+    (add-to-list 'load-path workset--dir)))
+
 ;;;; Customization
 
 (defgroup workset nil

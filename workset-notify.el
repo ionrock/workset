@@ -44,6 +44,13 @@
   :type '(repeat string)
   :group 'workset-notify)
 
+(defcustom workset-notify-working-patterns nil
+  "Optional regex patterns that indicate an agent is actively working.
+If nil, any output counts as working."
+  :type '(choice (const :tag "Any output" nil)
+                 (repeat string))
+  :group 'workset-notify)
+
 (defcustom workset-notify-notify-states '(needs-input done)
   "States that should trigger Emacs notifications."
   :type '(repeat symbol)
@@ -59,6 +66,18 @@
 (defcustom workset-notify-max-output 2000
   "Max chars of recent output to keep for pattern matching."
   :type 'integer
+  :group 'workset-notify)
+
+(defcustom workset-notify-debounce-seconds 0.5
+  "Minimum seconds between state changes (except input-needed)."
+  :type 'number
+  :group 'workset-notify)
+
+(defcustom workset-notify-idle-seconds 10
+  "Seconds of no output before marking the buffer idle.
+Set to nil to disable idle detection."
+  :type '(choice (const :tag "Disable" nil)
+                 number)
   :group 'workset-notify)
 
 (defcustom workset-notify-clear-commands
@@ -89,11 +108,18 @@
   "Face for working modeline indicator."
   :group 'workset-notify)
 
+(defface workset-notify-idle-face
+  '((t :foreground "gray50"))
+  "Face for idle modeline indicator."
+  :group 'workset-notify)
+
 (defvar workset-notify--window-hook-installed nil)
 
 (defvar-local workset-notify--state nil)
 (defvar-local workset-notify--recent-output "")
 (defvar-local workset-notify--mode-line-cell nil)
+(defvar-local workset-notify--last-change-time 0)
+(defvar-local workset-notify--idle-timer nil)
 
 (defun workset-notify--matches-any (patterns text)
   "Return non-nil if any regex in PATTERNS matches TEXT."
@@ -119,6 +145,7 @@
     ('needs-input (propertize " [Input]" 'face 'workset-notify-needs-input-face))
     ('done (propertize " [Done]" 'face 'workset-notify-done-face))
     ('working (propertize " [Working]" 'face 'workset-notify-working-face))
+    ('idle (propertize " [Idle]" 'face 'workset-notify-idle-face))
     (_ "")))
 
 (defun workset-notify--ensure-modeline ()
@@ -147,10 +174,33 @@
 
 (defun workset-notify--set-state (state)
   "Set notification STATE and update UI."
-  (unless (eq workset-notify--state state)
-    (setq workset-notify--state state)
-    (force-mode-line-update)
-    (workset-notify--emit state)))
+  (let ((now (float-time))
+        (debounce workset-notify-debounce-seconds))
+    (when (or (not (eq workset-notify--state state))
+              (eq state 'needs-input))
+      (when (or (eq state 'needs-input)
+                (<= debounce 0)
+                (>= (- now workset-notify--last-change-time) debounce))
+        (setq workset-notify--state state)
+        (setq workset-notify--last-change-time now)
+        (force-mode-line-update)
+        (workset-notify--emit state)))))
+
+(defun workset-notify--schedule-idle ()
+  "Schedule idle state update for the current buffer."
+  (when workset-notify--idle-timer
+    (cancel-timer workset-notify--idle-timer))
+  (when (and workset-notify-idle-seconds
+             (numberp workset-notify-idle-seconds)
+             (> workset-notify-idle-seconds 0))
+    (setq workset-notify--idle-timer
+          (run-at-time workset-notify-idle-seconds nil
+                       (lambda (buf)
+                         (when (buffer-live-p buf)
+                           (with-current-buffer buf
+                             (when workset-notify-mode
+                               (workset-notify--set-state 'idle)))))
+                       (current-buffer)))))
 
 (defun workset-notify--output-filter (output)
   "Filter vterm OUTPUT to detect agent state."
@@ -158,9 +208,14 @@
     (setq workset-notify--recent-output
           (workset-notify--trim-output
            (concat workset-notify--recent-output output)))
+    (workset-notify--schedule-idle)
     (let ((matched (workset-notify--match-state workset-notify--recent-output)))
       (cond
        (matched (workset-notify--set-state matched))
+       (workset-notify-working-patterns
+        (when (workset-notify--matches-any workset-notify-working-patterns
+                                           workset-notify--recent-output)
+          (workset-notify--set-state 'working)))
        ((eq workset-notify--state 'done)
         (workset-notify--set-state 'working))
        ((and (not (eq workset-notify--state 'needs-input))
@@ -194,17 +249,30 @@
 (define-minor-mode workset-notify-mode
   "Minor mode to notify on agent output in vterm buffers."
   :init-value nil
-  :lighter ""
+  :lighter " WN"
   (if workset-notify-mode
       (progn
         (setq-local workset-notify--state nil)
         (setq-local workset-notify--recent-output "")
+        (setq-local workset-notify--last-change-time 0)
         (workset-notify--ensure-modeline)
         (workset-notify--ensure-window-hook)
         (add-hook 'vterm-output-filter-functions #'workset-notify--output-filter nil t)
         (add-hook 'post-command-hook #'workset-notify--maybe-clear-on-command nil t))
     (remove-hook 'vterm-output-filter-functions #'workset-notify--output-filter t)
-    (remove-hook 'post-command-hook #'workset-notify--maybe-clear-on-command t)))
+    (remove-hook 'post-command-hook #'workset-notify--maybe-clear-on-command t)
+    (when workset-notify--idle-timer
+      (cancel-timer workset-notify--idle-timer)
+      (setq workset-notify--idle-timer nil))))
+
+;;;###autoload
+(defun workset-notify-set-state (state)
+  "Manually set notification STATE in the current buffer."
+  (interactive
+   (list (intern (completing-read "State: "
+                                  '(idle working needs-input done)
+                                  nil t))))
+  (workset-notify--set-state state))
 
 ;;;###autoload
 (defun workset-notify-attach ()
