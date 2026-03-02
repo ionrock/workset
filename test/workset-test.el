@@ -66,6 +66,26 @@
     (should (equal (sort (workset--active-keys) #'string<)
                    '("r/a" "r/b")))))
 
+(ert-deftest workset-test-notify-match-state ()
+  "Test notification pattern matching."
+  (let ((workset-notify-input-patterns '("input please"))
+        (workset-notify-done-patterns '("all done")))
+    (should (eq (workset-notify--match-state "input please") 'needs-input))
+    (should (eq (workset-notify--match-state "all done") 'done))
+    (should-not (workset-notify--match-state "still working"))))
+
+(ert-deftest workset-test-notify-match-priority ()
+  "Test that input-needed has priority over done."
+  (let ((workset-notify-input-patterns '("ready"))
+        (workset-notify-done-patterns '("ready")))
+    (should (eq (workset-notify--match-state "ready") 'needs-input))))
+
+(ert-deftest workset-test-notify-trim-output ()
+  "Test trimming recent output window."
+  (let ((workset-notify-max-output 5))
+    (should (equal (workset-notify--trim-output "abc") "abc"))
+    (should (equal (workset-notify--trim-output "abcdef") "bcdef"))))
+
 ;;;; vterm buffer naming tests
 
 (ert-deftest workset-test-format-buffer-name ()

@@ -15,6 +15,7 @@
 (require 'subr-x)
 
 (declare-function vterm-mode "vterm")
+(declare-function workset-notify-attach "workset-notify")
 
 (defun workset-vterm--format-buffer-name (format-string repo task index)
   "Format a vterm buffer name from FORMAT-STRING.
@@ -45,7 +46,9 @@ Returns the created buffer."
          (buf (get-buffer-create buf-name)))
     (with-current-buffer buf
       (unless (derived-mode-p 'vterm-mode)
-        (vterm-mode)))
+        (vterm-mode))
+      (when (fboundp 'workset-notify-attach)
+        (workset-notify-attach)))
     (let ((proc (get-buffer-process buf)))
       (when proc
         (set-process-sentinel
