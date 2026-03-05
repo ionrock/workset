@@ -330,6 +330,119 @@
         (workset-notify--emit 'done)))
     (should (= (length warnings) 1))))
 
+(ert-deftest workset-test-notify-buffer-visible-p-hidden ()
+  "Test that buffer-visible-p returns nil when buffer has no window."
+  (let ((buf (generate-new-buffer " *workset-test-hidden*")))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Buffer has no window, so should not be visible
+          (should-not (workset-notify--buffer-visible-p)))
+      (kill-buffer buf))))
+
+(ert-deftest workset-test-notify-buffer-visible-p-visible ()
+  "Test that buffer-visible-p returns non-nil when buffer is shown in a window."
+  (let ((buf (generate-new-buffer " *workset-test-visible*")))
+    (unwind-protect
+        (let ((win (display-buffer buf)))
+          (unwind-protect
+              (with-current-buffer buf
+                (should (workset-notify--buffer-visible-p)))
+            (delete-window win)))
+      (kill-buffer buf))))
+
+(ert-deftest workset-test-notify-play-sound-zero-throttle ()
+  "Sound is played every time when throttle is set to zero."
+  (let ((workset-notify-sound-enabled t)
+        (workset-notify-sound-throttle-seconds 0)
+        (workset-notify-sound-command "afplay")
+        (workset-notify--last-sound-time nil)
+        (call-count 0))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_) t))
+              ((symbol-function 'start-process)
+               (lambda (&rest _) (setq call-count (1+ call-count)) nil)))
+      (let ((system-type 'darwin))
+        ;; First call should play
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 1))
+        ;; Second call with zero throttle should also play
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 2))))))
+
+(ert-deftest workset-test-notify-emit-disabled ()
+  "Test that emit does nothing when workset-notify-enabled is nil."
+  (let ((workset-notify-enabled nil)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'modeline-and-message)
+        (messages nil)
+        (sound-called nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages)))
+              ((symbol-function 'workset-notify--play-sound)
+               (lambda (_sound _state) (setq sound-called t))))
+      (workset-notify--emit 'done)
+      (should (null messages))
+      (should-not sound-called))))
+
+(ert-deftest workset-test-notify-emit-state-not-in-notify-states ()
+  "Test that emit does nothing for states not in workset-notify-notify-states."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done))
+        (workset-notify-method 'modeline-and-message)
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      ;; needs-input is not in notify-states
+      (workset-notify--emit 'needs-input)
+      (should (null messages)))))
+
+(ert-deftest workset-test-notify-emit-needs-input-with-sound-hidden ()
+  "Test that needs-input state plays correct sound with modeline-and-sound."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(needs-input done))
+        (workset-notify-method 'modeline-and-sound)
+        (workset-notify-sound-needs-input "Sosumi")
+        (sound-calls nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (sound state) (push (list sound state) sound-calls)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () nil)))
+      (workset-notify--emit 'needs-input)
+      (should (equal (length sound-calls) 1))
+      (should (equal (car sound-calls) (list "Sosumi" 'needs-input))))))
+
+(ert-deftest workset-test-notify-emit-modeline-message-and-sound-visible ()
+  "Test that modeline-message-and-sound sends message but not sound when visible."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'modeline-message-and-sound)
+        (workset-notify-sound-done "Glass")
+        (sound-called nil)
+        (messages nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (_sound _state) (setq sound-called t)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () t))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (workset-notify--emit 'done)
+      ;; Message should still be sent even when visible
+      (should (= (length messages) 1))
+      ;; But sound should not play since buffer is visible
+      (should-not sound-called))))
+
+(ert-deftest workset-test-notify-emit-sound-visible-no-play ()
+  "Test that sound method does not play when buffer is visible."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'sound)
+        (sound-called nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (_sound _state) (setq sound-called t)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () t)))
+      (workset-notify--emit 'done)
+      (should-not sound-called))))
+
 ;;;; vterm buffer naming tests
 
 (ert-deftest workset-test-format-buffer-name ()
