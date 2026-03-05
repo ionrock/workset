@@ -156,6 +156,85 @@
         (workset-notify--play-sound "NoSuchSound" 'done)))
     (should warned)))
 
+(ert-deftest workset-test-notify-claude-code-input-patterns ()
+  "Test that default input patterns detect Claude Code prompt markers."
+  ;; Claude Code prompt marker
+  (should (workset-notify--matches-any workset-notify-input-patterns "> "))
+  ;; Y/n prompts
+  (should (workset-notify--matches-any workset-notify-input-patterns "Do you want to proceed? [Y/n]"))
+  (should (workset-notify--matches-any workset-notify-input-patterns "(y/n)"))
+  (should (workset-notify--matches-any workset-notify-input-patterns "(Y/n)"))
+  (should (workset-notify--matches-any workset-notify-input-patterns "Press enter"))
+  ;; Legacy generic patterns still work
+  (should (workset-notify--matches-any workset-notify-input-patterns "awaiting your input")))
+
+(ert-deftest workset-test-notify-claude-code-done-patterns ()
+  "Test that default done patterns detect Claude Code completion indicators."
+  (should (workset-notify--matches-any workset-notify-done-patterns "✓ Completed"))
+  (should (workset-notify--matches-any workset-notify-done-patterns "✓ Done"))
+  (should (workset-notify--matches-any workset-notify-done-patterns "Task completed"))
+  (should (workset-notify--matches-any workset-notify-done-patterns "Changes applied"))
+  ;; Legacy patterns still work
+  (should (workset-notify--matches-any workset-notify-done-patterns "all done")))
+
+(ert-deftest workset-test-notify-working-patterns ()
+  "Test that default working patterns detect common progress indicators."
+  (should (workset-notify--matches-any workset-notify-working-patterns "Thinking..."))
+  (should (workset-notify--matches-any workset-notify-working-patterns "Analyzing..."))
+  (should (workset-notify--matches-any workset-notify-working-patterns "Reading file"))
+  (should (workset-notify--matches-any workset-notify-working-patterns "Writing file"))
+  (should (workset-notify--matches-any workset-notify-working-patterns "Searching")))
+
+(ert-deftest workset-test-notify-use-preset-merges ()
+  "Test that use-preset merges patterns without overwriting existing ones."
+  (let ((workset-notify-input-patterns '("existing-input"))
+        (workset-notify-done-patterns '("existing-done"))
+        (workset-notify-working-patterns '("existing-working"))
+        (workset-notify-agent-presets
+         '((test-agent
+            :input ("preset-input-1" "preset-input-2")
+            :done ("preset-done-1")
+            :working ("preset-working-1")))))
+    (workset-notify-use-preset 'test-agent)
+    ;; Original patterns preserved
+    (should (member "existing-input" workset-notify-input-patterns))
+    (should (member "existing-done" workset-notify-done-patterns))
+    (should (member "existing-working" workset-notify-working-patterns))
+    ;; Preset patterns appended
+    (should (member "preset-input-1" workset-notify-input-patterns))
+    (should (member "preset-input-2" workset-notify-input-patterns))
+    (should (member "preset-done-1" workset-notify-done-patterns))
+    (should (member "preset-working-1" workset-notify-working-patterns))))
+
+(ert-deftest workset-test-notify-use-preset-no-duplicates ()
+  "Test that use-preset does not add duplicate patterns."
+  (let ((workset-notify-input-patterns '("shared-pattern"))
+        (workset-notify-done-patterns nil)
+        (workset-notify-working-patterns nil)
+        (workset-notify-agent-presets
+         '((test-agent
+            :input ("shared-pattern" "new-pattern")
+            :done nil
+            :working nil))))
+    (workset-notify-use-preset 'test-agent)
+    ;; shared-pattern appears only once
+    (should (= 1 (cl-count "shared-pattern" workset-notify-input-patterns :test #'equal)))
+    ;; new-pattern was added
+    (should (member "new-pattern" workset-notify-input-patterns))))
+
+(ert-deftest workset-test-notify-use-preset-unknown-agent ()
+  "Test that use-preset signals an error for unknown agents."
+  (let ((workset-notify-agent-presets '((known-agent :input nil :done nil :working nil))))
+    (should-error (workset-notify-use-preset 'unknown-agent) :type 'user-error)))
+
+(ert-deftest workset-test-notify-preset-claude-code-exists ()
+  "Test that the claude-code preset is defined with expected keys."
+  (let ((preset (alist-get 'claude-code workset-notify-agent-presets)))
+    (should preset)
+    (should (plist-get preset :input))
+    (should (plist-get preset :done))
+    (should (plist-get preset :working))))
+
 ;;;; vterm buffer naming tests
 
 (ert-deftest workset-test-format-buffer-name ()

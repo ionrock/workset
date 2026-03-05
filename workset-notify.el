@@ -25,17 +25,35 @@
   :group 'workset-notify)
 
 (defcustom workset-notify-input-patterns
-  '("\\bawaiting your input\\b"
+  '(;; Claude Code: prompt marker / waiting state
+    "^> $"
+    "\\? \\[Y/n\\]"
+    "\\? \\[y/N\\]"
+    ;; Generic input/confirmation prompts
+    "\\bDo you want to proceed\\b"
+    "\\bawaiting your input\\b"
     "\\bneed your input\\b"
     "\\bplease respond\\b"
     "\\benter to continue\\b"
-    "\\bpress (enter|return) to continue\\b")
+    "\\bpress \\(enter\\|return\\) to continue\\b"
+    "\\[Y/n\\]"
+    "\\[y/N\\]"
+    "(y/n)"
+    "(Y/n)"
+    "Press enter")
   "Regex patterns that indicate an agent is waiting for user input."
   :type '(repeat string)
   :group 'workset-notify)
 
 (defcustom workset-notify-done-patterns
-  '("\\ball done\\b"
+  '(;; Claude Code: idle/done state indicator
+    "✓ Completed"
+    "✓ Done"
+    "⎿ .* completed"
+    ;; Generic done patterns
+    "\\bTask completed\\b"
+    "\\bChanges applied\\b"
+    "\\ball done\\b"
     "\\btask complete\\b"
     "\\bfinished\\b"
     "\\bcompleted\\b"
@@ -44,11 +62,64 @@
   :type '(repeat string)
   :group 'workset-notify)
 
-(defcustom workset-notify-working-patterns nil
+(defcustom workset-notify-working-patterns
+  '(;; Claude Code / generic progress indicators
+    "\\bThinking\\.\\.\\.\\b"
+    "\\bAnalyzing\\.\\.\\.\\b"
+    "\\bReading file\\b"
+    "\\bWriting file\\b"
+    "\\bRunning\\b"
+    "\\bSearching\\b")
   "Optional regex patterns that indicate an agent is actively working.
 If nil, any output counts as working."
   :type '(choice (const :tag "Any output" nil)
                  (repeat string))
+  :group 'workset-notify)
+
+(defcustom workset-notify-agent-presets
+  '((claude-code
+     :input ("^> $"
+             "\\? \\[Y/n\\]"
+             "\\? \\[y/N\\]"
+             "\\bDo you want to proceed\\b"
+             "\\bPress enter\\b")
+     :done ("✓ Completed"
+            "✓ Done"
+            "⎿ .* completed"
+            "\\bTask completed\\b"
+            "\\bChanges applied\\b")
+     :working ("\\bThinking\\.\\.\\.\\b"
+               "\\bAnalyzing\\.\\.\\.\\b"
+               "\\bReading file\\b"
+               "\\bWriting file\\b"))
+    (cursor
+     :input ("\\bDo you want to proceed\\b"
+             "\\[Y/n\\]"
+             "(y/n)"
+             "\\bPress enter\\b")
+     :done ("\\bTask completed\\b"
+            "\\bChanges applied\\b"
+            "\\bDone\\b")
+     :working ("\\bThinking\\.\\.\\.\\b"
+               "\\bAnalyzing\\.\\.\\.\\b"
+               "\\bApplying changes\\b"))
+    (aider
+     :input ("\\bDo you want to proceed\\b"
+             "^aider> $"
+             "\\[Y/n\\]"
+             "(y/n)")
+     :done ("\\bFiles? \\(created\\|edited\\)\\b"
+            "\\bChanges applied\\b"
+            "\\bTask completed\\b")
+     :working ("\\bSearching\\b"
+               "\\bAnalyzing\\.\\.\\.\\b"
+               "\\bReading file\\b"
+               "\\bWriting file\\b")))
+  "Alist mapping agent name symbols to pattern lists.
+Each entry has the form (AGENT-NAME :input PATS :done PATS :working PATS).
+Use `workset-notify-use-preset' to load a preset."
+  :type '(alist :key-type symbol
+                :value-type (plist :key-type symbol :value-type (repeat string)))
   :group 'workset-notify)
 
 (defcustom workset-notify-notify-states '(needs-input done)
@@ -341,6 +412,36 @@ macOS, or when the sound was played too recently (see
   "Enable `workset-notify-mode' in the current buffer if appropriate."
   (when (and workset-notify-enabled (derived-mode-p 'vterm-mode))
     (workset-notify-mode 1)))
+
+;;;###autoload
+(defun workset-notify-use-preset (agent)
+  "Merge patterns from AGENT preset into the current pattern variables.
+AGENT must be a key in `workset-notify-agent-presets'.
+Existing custom patterns are preserved; preset patterns are appended
+if not already present."
+  (interactive
+   (list (intern (completing-read "Agent preset: "
+                                  (mapcar #'car workset-notify-agent-presets)
+                                  nil t))))
+  (let ((preset (alist-get agent workset-notify-agent-presets)))
+    (unless preset
+      (user-error "Unknown agent preset: %s" agent))
+    (let ((input-pats (plist-get preset :input))
+          (done-pats (plist-get preset :done))
+          (working-pats (plist-get preset :working)))
+      (dolist (pat input-pats)
+        (unless (member pat workset-notify-input-patterns)
+          (setq workset-notify-input-patterns
+                (append workset-notify-input-patterns (list pat)))))
+      (dolist (pat done-pats)
+        (unless (member pat workset-notify-done-patterns)
+          (setq workset-notify-done-patterns
+                (append workset-notify-done-patterns (list pat)))))
+      (dolist (pat working-pats)
+        (unless (member pat workset-notify-working-patterns)
+          (setq workset-notify-working-patterns
+                (append workset-notify-working-patterns (list pat)))))
+      (message "workset-notify: loaded preset %s" agent))))
 
 (provide 'workset-notify)
 ;;; workset-notify.el ends here
