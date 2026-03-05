@@ -131,7 +131,10 @@ Use `workset-notify-use-preset' to load a preset."
   "Notification method to use when state changes."
   :type '(choice (const :tag "Modeline only" modeline)
                  (const :tag "Modeline + message" modeline-and-message)
-                 (const :tag "Modeline + warning" modeline-and-warning))
+                 (const :tag "Modeline + warning" modeline-and-warning)
+                 (const :tag "Modeline + sound" modeline-and-sound)
+                 (const :tag "Sound only" sound)
+                 (const :tag "Modeline + message + sound" modeline-message-and-sound))
   :group 'workset-notify)
 
 (defcustom workset-notify-max-output 2000
@@ -282,6 +285,10 @@ macOS, or when the sound was played too recently (see
     (setq-local mode-line-format
                 (append mode-line-format (list workset-notify--mode-line-cell)))))
 
+(defun workset-notify--buffer-visible-p ()
+  "Return non-nil if the current buffer is visible in any window."
+  (get-buffer-window (current-buffer)))
+
 (defun workset-notify--emit (state)
   "Emit Emacs notifications for STATE if configured."
   (when (and workset-notify-enabled (memq state workset-notify-notify-states))
@@ -296,13 +303,33 @@ macOS, or when the sound was played too recently (see
            (message "Workset: %s %s" (buffer-name) label))
           ('modeline-and-warning
            (display-warning 'workset (format "Workset: %s %s" (buffer-name) label)
-                            :warning)))
-        (let ((sound (pcase state
-                       ('done workset-notify-sound-done)
-                       ('needs-input workset-notify-sound-needs-input)
-                       (_ nil))))
-          (when sound
-            (workset-notify--play-sound sound state)))))))
+                            :warning))
+          ('modeline-and-sound
+           (when (not (workset-notify--buffer-visible-p))
+             (let ((sound (pcase state
+                            ('done workset-notify-sound-done)
+                            ('needs-input workset-notify-sound-needs-input)
+                            (_ nil))))
+               (when sound
+                 (workset-notify--play-sound sound state)))))
+          ('sound
+           (when (not (workset-notify--buffer-visible-p))
+             (let ((sound (pcase state
+                            ('done workset-notify-sound-done)
+                            ('needs-input workset-notify-sound-needs-input)
+                            (_ nil))))
+               (when sound
+                 (workset-notify--play-sound sound state)))))
+          ('modeline-message-and-sound
+           (message "Workset: %s %s" (buffer-name) label)
+           (when (not (workset-notify--buffer-visible-p))
+             (let ((sound (pcase state
+                            ('done workset-notify-sound-done)
+                            ('needs-input workset-notify-sound-needs-input)
+                            (_ nil))))
+               (when sound
+                 (workset-notify--play-sound sound state))))))))))
+
 
 (defun workset-notify--set-state (state)
   "Set notification STATE and update UI."
