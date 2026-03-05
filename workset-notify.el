@@ -7,7 +7,11 @@
 
 ;;; Commentary:
 
-;; Detect agent output in vterm buffers and notify via modeline/messages.
+;; Detect agent output in vterm buffers and notify via modeline, messages,
+;; and/or sounds.  Supports macOS system sounds via `afplay' when
+;; `workset-notify-method' includes sound (e.g. `modeline-and-sound').
+;; Agent-specific detection patterns can be loaded via
+;; `workset-notify-use-preset'.
 
 ;;; Code:
 
@@ -128,7 +132,21 @@ Use `workset-notify-use-preset' to load a preset."
   :group 'workset-notify)
 
 (defcustom workset-notify-method 'modeline
-  "Notification method to use when state changes."
+  "Notification method to use when state changes.
+
+Available methods:
+- `modeline': update the modeline indicator only.
+- `modeline-and-message': modeline plus an echo-area message.
+- `modeline-and-warning': modeline plus a `display-warning' popup.
+- `modeline-and-sound': modeline plus a macOS system sound when the
+  buffer is not currently visible.
+- `sound': play a macOS system sound (no modeline update).
+- `modeline-message-and-sound': modeline, echo-area message, and sound.
+
+Sound methods require macOS and use `workset-notify-sound-command' to
+play files from /System/Library/Sounds/.  See also
+`workset-notify-sound-done', `workset-notify-sound-needs-input', and
+`workset-notify-sound-throttle-seconds'."
   :type '(choice (const :tag "Modeline only" modeline)
                  (const :tag "Modeline + message" modeline-and-message)
                  (const :tag "Modeline + warning" modeline-and-warning)
@@ -168,7 +186,11 @@ Set to nil to disable idle detection."
   :group 'workset-notify)
 
 (defcustom workset-notify-sound-enabled t
-  "Whether to play sounds on state notifications."
+  "Whether to play sounds on state notifications.
+Has effect only when `workset-notify-method' is a sound-enabled method
+such as `modeline-and-sound', `sound', or `modeline-message-and-sound'.
+Sound playback is always a no-op on non-macOS systems regardless of
+this setting."
   :type 'boolean
   :group 'workset-notify)
 
@@ -185,7 +207,11 @@ Must be the base name of a file in /System/Library/Sounds/ (without .aiff)."
   :group 'workset-notify)
 
 (defcustom workset-notify-sound-command "afplay"
-  "Command used to play sounds on macOS."
+  "Shell command used to play a sound file on macOS.
+The command is invoked as an asynchronous subprocess with the absolute
+path to an AIFF file as its sole argument.  The default `afplay' is
+available on all macOS systems.  Change this only if you need a
+custom audio player."
   :type 'string
   :group 'workset-notify)
 
@@ -215,13 +241,20 @@ Prevents rapid repeated sound notifications."
   "Face for idle modeline indicator."
   :group 'workset-notify)
 
-(defvar workset-notify--window-hook-installed nil)
+(defvar workset-notify--window-hook-installed nil
+  "Non-nil when the global window-selection-change hook has been installed.")
 
-(defvar-local workset-notify--state nil)
-(defvar-local workset-notify--recent-output "")
-(defvar-local workset-notify--mode-line-cell nil)
-(defvar-local workset-notify--last-change-time 0)
-(defvar-local workset-notify--idle-timer nil)
+(defvar-local workset-notify--state nil
+  "Current notification state for this buffer.
+One of nil, `working', `needs-input', `done', or `idle'.")
+(defvar-local workset-notify--recent-output ""
+  "Accumulated recent vterm output used for pattern matching.")
+(defvar-local workset-notify--mode-line-cell nil
+  "The modeline (:eval ...) cell added to `mode-line-format'.")
+(defvar-local workset-notify--last-change-time 0
+  "Float time of the last state change, used for debouncing.")
+(defvar-local workset-notify--idle-timer nil
+  "Timer that fires to set the buffer state to `idle'.")
 (defvar-local workset-notify--last-sound-time nil
   "Alist mapping state symbol to the `float-time' when that sound was last played.")
 
