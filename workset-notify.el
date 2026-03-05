@@ -93,6 +93,34 @@ Set to nil to disable idle detection."
   :type '(repeat symbol)
   :group 'workset-notify)
 
+(defcustom workset-notify-sound-enabled t
+  "Whether to play sounds on state notifications."
+  :type 'boolean
+  :group 'workset-notify)
+
+(defcustom workset-notify-sound-done "Glass"
+  "Sound name to play when an agent finishes.
+Must be the base name of a file in /System/Library/Sounds/ (without .aiff)."
+  :type 'string
+  :group 'workset-notify)
+
+(defcustom workset-notify-sound-needs-input "Sosumi"
+  "Sound name to play when an agent needs input.
+Must be the base name of a file in /System/Library/Sounds/ (without .aiff)."
+  :type 'string
+  :group 'workset-notify)
+
+(defcustom workset-notify-sound-command "afplay"
+  "Command used to play sounds on macOS."
+  :type 'string
+  :group 'workset-notify)
+
+(defcustom workset-notify-sound-throttle-seconds 5
+  "Minimum seconds between repeated sounds for the same state.
+Prevents rapid repeated sound notifications."
+  :type 'number
+  :group 'workset-notify)
+
 (defface workset-notify-needs-input-face
   '((t :weight bold :foreground "orange"))
   "Face for input-needed modeline indicator."
@@ -120,6 +148,33 @@ Set to nil to disable idle detection."
 (defvar-local workset-notify--mode-line-cell nil)
 (defvar-local workset-notify--last-change-time 0)
 (defvar-local workset-notify--idle-timer nil)
+(defvar-local workset-notify--last-sound-time nil
+  "Alist mapping state symbol to the `float-time' when that sound was last played.")
+
+(defun workset-notify--play-sound (sound-name state)
+  "Play SOUND-NAME asynchronously for STATE if conditions allow.
+SOUND-NAME is the base name of a file under /System/Library/Sounds/.
+STATE is the notification state symbol used for throttle tracking.
+Does nothing when `workset-notify-sound-enabled' is nil, when not on
+macOS, or when the sound was played too recently (see
+`workset-notify-sound-throttle-seconds')."
+  (when (and workset-notify-sound-enabled
+             (eq system-type 'darwin))
+    (let* ((now (float-time))
+           (last (cdr (assq state workset-notify--last-sound-time)))
+           (throttle workset-notify-sound-throttle-seconds))
+      (when (or (null last)
+                (<= throttle 0)
+                (>= (- now last) throttle))
+        (let ((path (format "/System/Library/Sounds/%s.aiff" sound-name)))
+          (if (file-exists-p path)
+              (progn
+                (setq workset-notify--last-sound-time
+                      (cons (cons state now)
+                            (assq-delete-all state workset-notify--last-sound-time)))
+                (start-process "workset-notify-sound" nil
+                               workset-notify-sound-command path))
+            (message "workset-notify: sound file not found: %s" path)))))))
 
 (defun workset-notify--matches-any (patterns text)
   "Return non-nil if any regex in PATTERNS matches TEXT."
@@ -170,7 +225,13 @@ Set to nil to disable idle detection."
            (message "Workset: %s %s" (buffer-name) label))
           ('modeline-and-warning
            (display-warning 'workset (format "Workset: %s %s" (buffer-name) label)
-                            :warning)))))))
+                            :warning)))
+        (let ((sound (pcase state
+                       ('done workset-notify-sound-done)
+                       ('needs-input workset-notify-sound-needs-input)
+                       (_ nil))))
+          (when sound
+            (workset-notify--play-sound sound state)))))))
 
 (defun workset-notify--set-state (state)
   "Set notification STATE and update UI."
@@ -255,6 +316,7 @@ Set to nil to disable idle detection."
         (setq-local workset-notify--state nil)
         (setq-local workset-notify--recent-output "")
         (setq-local workset-notify--last-change-time 0)
+        (setq-local workset-notify--last-sound-time nil)
         (workset-notify--ensure-modeline)
         (workset-notify--ensure-window-hook)
         (add-hook 'vterm-output-filter-functions #'workset-notify--output-filter nil t)

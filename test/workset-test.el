@@ -86,6 +86,76 @@
     (should (equal (workset-notify--trim-output "abc") "abc"))
     (should (equal (workset-notify--trim-output "abcdef") "bcdef"))))
 
+(ert-deftest workset-test-notify-play-sound-disabled ()
+  "Sound is not played when workset-notify-sound-enabled is nil."
+  (let ((workset-notify-sound-enabled nil)
+        (called nil))
+    (cl-letf (((symbol-function 'start-process)
+               (lambda (&rest _) (setq called t) nil)))
+      (workset-notify--play-sound "Glass" 'done))
+    (should-not called)))
+
+(ert-deftest workset-test-notify-play-sound-non-darwin ()
+  "Sound is not played on non-macOS systems."
+  (let ((workset-notify-sound-enabled t)
+        (called nil))
+    (cl-letf (((symbol-function 'start-process)
+               (lambda (&rest _) (setq called t) nil)))
+      (let ((system-type 'gnu/linux))
+        (workset-notify--play-sound "Glass" 'done)))
+    (should-not called)))
+
+(ert-deftest workset-test-notify-play-sound-throttle ()
+  "Sound is throttled when called too rapidly for the same state."
+  (let ((workset-notify-sound-enabled t)
+        (workset-notify-sound-throttle-seconds 60)
+        (workset-notify-sound-command "afplay")
+        (workset-notify--last-sound-time nil)
+        (call-count 0))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_) t))
+              ((symbol-function 'start-process)
+               (lambda (&rest _) (setq call-count (1+ call-count)) nil)))
+      (let ((system-type 'darwin))
+        ;; First call should play
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 1))
+        ;; Second call within throttle window should NOT play
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 1))))))
+
+(ert-deftest workset-test-notify-play-sound-different-states ()
+  "Sound throttle is per-state: different states are not throttled together."
+  (let ((workset-notify-sound-enabled t)
+        (workset-notify-sound-throttle-seconds 60)
+        (workset-notify-sound-command "afplay")
+        (workset-notify--last-sound-time nil)
+        (call-count 0))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_) t))
+              ((symbol-function 'start-process)
+               (lambda (&rest _) (setq call-count (1+ call-count)) nil)))
+      (let ((system-type 'darwin))
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 1))
+        ;; Different state should still play immediately
+        (workset-notify--play-sound "Sosumi" 'needs-input)
+        (should (= call-count 2))))))
+
+(ert-deftest workset-test-notify-play-sound-missing-file ()
+  "A warning message is emitted when the sound file does not exist."
+  (let ((workset-notify-sound-enabled t)
+        (workset-notify-sound-throttle-seconds 0)
+        (workset-notify-sound-command "afplay")
+        (workset-notify--last-sound-time nil)
+        (warned nil))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_) nil))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (when (string-match-p "sound file not found" (apply #'format fmt args))
+                   (setq warned t)))))
+      (let ((system-type 'darwin))
+        (workset-notify--play-sound "NoSuchSound" 'done)))
+    (should warned)))
+
 ;;;; vterm buffer naming tests
 
 (ert-deftest workset-test-format-buffer-name ()
