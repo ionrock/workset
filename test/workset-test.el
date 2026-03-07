@@ -978,12 +978,12 @@
           (let ((default-directory tmpdir))
             (cl-letf (((symbol-function 'workset--git-repo-root) (lambda () nil)))
               (workset-list)))
-          (with-current-buffer "*workset-list*"
+          (with-current-buffer "*workset*"
             (let ((content (buffer-string)))
-              (should (string-match-p "Discovered Worktrees" content))
+              (should (string-match-p "Discovered" content))
               (should (string-match-p "myrepo" content)))))
-      (when (get-buffer "*workset-list*")
-        (kill-buffer "*workset-list*"))
+      (when (get-buffer "*workset*")
+        (kill-buffer "*workset*"))
       (delete-directory tmpdir t))))
 
 (ert-deftest workset-test-discover-all-worktrees-deduplication ()
@@ -1062,13 +1062,13 @@
             (cl-letf (((symbol-function 'workset--git-repo-root) (lambda () nil)))
               (workset-list)))
           ;; Buffer should have both sections
-          (with-current-buffer "*workset-list*"
+          (with-current-buffer "*workset*"
             (let ((content (buffer-string)))
               (should (string-match-p "Active Worksets" content))
-              (should (string-match-p "Discovered Worktrees" content)))))
+              (should (string-match-p "Discovered" content)))))
       (workset--remove "testrepo/task1")
-      (when (get-buffer "*workset-list*")
-        (kill-buffer "*workset-list*"))
+      (when (get-buffer "*workset*")
+        (kill-buffer "*workset*"))
       (delete-directory tmpdir t))))
 
 (ert-deftest workset-test-discover-all-worktrees-multiple-dirs ()
@@ -1107,17 +1107,17 @@
       (delete-directory tmpdir t))))
 
 (ert-deftest workset-test-list-no-discovery-dirs-not-in-repo ()
-  "Test that workset-list shows message when no active worksets or repos."
+  "Test that workset-list opens the buffer even with no worksets or repos."
   (let ((workset--active-worksets nil)
         (workset-superset-directory "/nonexistent-superset")
-        (workset-base-directory "/nonexistent-workset")
-        (messages nil))
-    (cl-letf (((symbol-function 'workset--git-repo-root) (lambda () nil))
-              ((symbol-function 'message)
-               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
-      (workset-list))
-    (should (= 1 (length messages)))
-    (should (string-match-p "No active worksets" (car messages)))))
+        (workset-base-directory "/nonexistent-workset"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'workset--git-repo-root) (lambda () nil)))
+          (workset-list)
+          ;; Buffer should be created even when there is nothing to show
+          (should (get-buffer "*workset*")))
+      (when (get-buffer "*workset*")
+        (kill-buffer "*workset*")))))
 
 (provide 'workset-test)
 ;;; workset-test.el ends here
