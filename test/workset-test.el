@@ -651,6 +651,137 @@
     (should (equal (workset--gh-pr-branch "/tmp/fake-repo" "42")
                    "feature/cool-thing"))))
 
+;;;; Worktree discovery tests
+
+(ert-deftest workset-test-read-branch-from-head-on-branch ()
+  "Test reading branch name from HEAD file when on a branch."
+  (let ((tmpfile (make-temp-file "workset-test-head-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "ref: refs/heads/my-feature\n"))
+          (should (equal (workset-worktree--read-branch-from-head tmpfile)
+                         "my-feature")))
+      (delete-file tmpfile))))
+
+(ert-deftest workset-test-read-branch-from-head-detached ()
+  "Test reading HEAD file when in detached HEAD state."
+  (let ((tmpfile (make-temp-file "workset-test-head-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "abc123def456abc123def456abc123def456abc123\n"))
+          (should-not (workset-worktree--read-branch-from-head tmpfile)))
+      (delete-file tmpfile))))
+
+(ert-deftest workset-test-read-branch-from-head-missing ()
+  "Test reading HEAD file when file does not exist."
+  (should-not (workset-worktree--read-branch-from-head "/nonexistent/path/HEAD")))
+
+(ert-deftest workset-test-resolve-gitdir ()
+  "Test resolving gitdir from a .git file."
+  (let* ((tmpdir (make-temp-file "workset-test-gitdir-" t))
+         (dot-git (expand-file-name ".git" tmpdir))
+         (gitdir (expand-file-name ".git/worktrees/my-wt" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file dot-git
+            (insert (format "gitdir: %s\n" gitdir)))
+          (should (equal (workset-worktree--resolve-gitdir dot-git) gitdir)))
+      (delete-directory tmpdir t))))
+
+(ert-deftest workset-test-resolve-gitdir-relative ()
+  "Test resolving a relative gitdir path from a .git file."
+  (let* ((tmpdir (make-temp-file "workset-test-gitdir-rel-" t))
+         (dot-git (expand-file-name ".git" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file dot-git
+            (insert "gitdir: ../.git/worktrees/my-wt\n"))
+          (let ((resolved (workset-worktree--resolve-gitdir dot-git)))
+            ;; Should be an absolute path
+            (should (file-name-absolute-p resolved))
+            ;; Should end with the relative path resolved
+            (should (string-suffix-p ".git/worktrees/my-wt" resolved))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest workset-test-repo-root-from-gitdir ()
+  "Test deriving repo root from a gitdir path."
+  (let ((gitdir "/home/user/myrepo/.git/worktrees/feature-branch"))
+    (should (equal (workset-worktree--repo-root-from-gitdir gitdir)
+                   "/home/user/myrepo/"))))
+
+(ert-deftest workset-test-discover-in-directory-main-repo ()
+  "Integration test: discover a main repository."
+  (let* ((tmpdir (make-temp-file "workset-test-disc-" t))
+         (repo-dir (expand-file-name "myrepo" tmpdir)))
+    (unwind-protect
+        (progn
+          (make-directory repo-dir t)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "init")
+            (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+            (call-process "git" nil nil nil "config" "user.name" "Test")
+            (with-temp-file (expand-file-name "README" repo-dir)
+              (insert "test\n"))
+            (call-process "git" nil nil nil "add" ".")
+            (call-process "git" nil nil nil "commit" "-m" "init"))
+          (let ((result (workset-worktree-discover-in-directory tmpdir)))
+            (should (= (length result) 1))
+            (let ((entry (car result)))
+              (should (equal (file-truename (plist-get entry :path))
+                             (file-truename repo-dir)))
+              (should (eq (plist-get entry :type) 'main))
+              (should (plist-get entry :branch)))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest workset-test-discover-in-directory-linked-worktree ()
+  "Integration test: discover a linked worktree."
+  (let* ((tmpdir (make-temp-file "workset-test-disc-wt-" t))
+         (repo-dir (expand-file-name "repo" tmpdir))
+         (wt-dir (expand-file-name "worktrees/feature" tmpdir)))
+    (unwind-protect
+        (progn
+          (make-directory repo-dir t)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "init")
+            (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+            (call-process "git" nil nil nil "config" "user.name" "Test")
+            (with-temp-file (expand-file-name "README" repo-dir)
+              (insert "test\n"))
+            (call-process "git" nil nil nil "add" ".")
+            (call-process "git" nil nil nil "commit" "-m" "init"))
+          ;; Create a linked worktree
+          (workset-worktree-create repo-dir wt-dir "feature-branch")
+          ;; Discover in a sub-directory containing the worktree only
+          (let* ((wt-parent (expand-file-name "worktrees" tmpdir))
+                 (result (workset-worktree-discover-in-directory wt-parent)))
+            (should (>= (length result) 1))
+            (let ((linked (cl-find 'linked result :key (lambda (e) (plist-get e :type)))))
+              (should linked)
+              (should (equal (plist-get linked :branch) "feature-branch"))
+              (should (plist-get linked :repo-root))))
+          ;; Clean up
+          (workset-worktree-remove repo-dir wt-dir))
+      (delete-directory tmpdir t))))
+
+(ert-deftest workset-test-discover-skips-excluded-dirs ()
+  "Test that discovery skips node_modules, .cache, elpa, and .git dirs."
+  (let* ((tmpdir (make-temp-file "workset-test-skip-" t)))
+    (unwind-protect
+        (progn
+          ;; Create skip dirs with fake .git inside
+          (dolist (skip-name '("node_modules" ".cache" "elpa"))
+            (let ((skip-dir (expand-file-name skip-name tmpdir)))
+              (make-directory (expand-file-name ".git" skip-dir) t)
+              ;; Write a HEAD file to make it look like a real repo
+              (with-temp-file (expand-file-name ".git/HEAD" skip-dir)
+                (insert "ref: refs/heads/main\n"))))
+          ;; Discovery should find nothing in tmpdir since all repos are in skipped dirs
+          (let ((result (workset-worktree-discover-in-directory tmpdir)))
+            (should (null result))))
+      (delete-directory tmpdir t))))
+
 (ert-deftest workset-test-list-branches ()
   "Integration test: list branches in a temp git repo."
   (let* ((tmpdir (make-temp-file "workset-test-branches-" t))
