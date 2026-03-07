@@ -27,10 +27,55 @@
                  "repo")))
 
 (ert-deftest workset-test-worktree-directory ()
-  "Test worktree directory construction."
-  (let ((workset-base-directory "/tmp/workset-test-base"))
+  "Test worktree directory construction in workset mode."
+  (let ((workset-base-directory "/tmp/workset-test-base")
+        (workset-create-directory 'workset))
     (should (equal (workset--worktree-directory "myrepo" "fix-bug")
                    "/tmp/workset-test-base/worktrees/myrepo/fix-bug"))))
+
+(ert-deftest workset-test-worktree-directory-superset-bare ()
+  "Test worktree directory construction in superset mode with no org/owner."
+  (let ((workset-superset-directory "/tmp/superset")
+        (workset-create-directory 'superset)
+        (workset-default-organization "")
+        (workset-default-owner ""))
+    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
+                   "/tmp/superset/worktrees/fix-bug"))))
+
+(ert-deftest workset-test-worktree-directory-superset-with-owner ()
+  "Test worktree directory construction in superset mode with owner only."
+  (let ((workset-superset-directory "/tmp/superset")
+        (workset-create-directory 'superset)
+        (workset-default-organization "")
+        (workset-default-owner "eric-larson"))
+    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
+                   "/tmp/superset/worktrees/eric-larson/fix-bug"))))
+
+(ert-deftest workset-test-worktree-directory-superset-with-org-and-owner ()
+  "Test worktree directory construction in superset mode with org and owner."
+  (let ((workset-superset-directory "/tmp/superset")
+        (workset-create-directory 'superset)
+        (workset-default-organization "internal")
+        (workset-default-owner "eric-larson"))
+    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
+                   "/tmp/superset/worktrees/internal/eric-larson/fix-bug"))))
+
+(ert-deftest workset-test-worktree-directory-superset-with-org-only ()
+  "Test worktree directory construction in superset mode with org only."
+  (let ((workset-superset-directory "/tmp/superset")
+        (workset-create-directory 'superset)
+        (workset-default-organization "internal")
+        (workset-default-owner ""))
+    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
+                   "/tmp/superset/worktrees/internal/fix-bug"))))
+
+(ert-deftest workset-test-discovery-directories ()
+  "Test that discovery directories includes both base and superset worktree dirs."
+  (let ((workset-base-directory "/tmp/base")
+        (workset-superset-directory "/tmp/superset"))
+    (let ((dirs (workset--discovery-directories)))
+      (should (member "/tmp/base/worktrees" dirs))
+      (should (member "/tmp/superset/worktrees" dirs)))))
 
 (ert-deftest workset-test-key ()
   "Test workset key formatting."
