@@ -27,6 +27,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'subr-x)
 (require 'transient)
 
@@ -251,14 +252,20 @@ BASE/worktrees/REPO/TASK."
 ;;;###autoload
 (defun workset-open ()
   "Switch to an existing workset's vterm, creating one if all are dead.
-Also discovers on-disk worktrees for the current repo that are not
-yet tracked as active worksets."
+Also discovers on-disk worktrees from both the current repo and all
+configured discovery directories."
   (interactive)
   (let* ((active-keys (workset--active-keys))
          (repo-root (workset--git-repo-root))
-         (disk-worktrees (workset--discover-worktrees repo-root))
+         (repo-worktrees (workset--discover-worktrees repo-root))
+         (all-worktrees (workset--discover-all-worktrees))
+         ;; Merge both discovery sources, deduplicating by key
+         (disk-worktrees (append repo-worktrees
+                                 (cl-remove-if (lambda (entry)
+                                                 (assoc (car entry) repo-worktrees))
+                                               all-worktrees)))
          (all-keys (delete-dups (append active-keys (mapcar #'car disk-worktrees))))
-         (_ (unless all-keys (user-error "No active worksets or repo worktrees")))
+         (_ (unless all-keys (user-error "No active worksets or discoverable worktrees")))
          (key (completing-read "Open workset: " all-keys nil t))
          (ws (workset--get key)))
     ;; If not already active, register from on-disk worktree
@@ -384,6 +391,26 @@ REPO-ROOT is nil or has no linked worktrees."
                                     :branch branch))
                     result)))))
       (nreverse result))))
+
+(defun workset--discover-all-worktrees ()
+  "Discover worktrees from all configured discovery directories.
+Returns an alist of (KEY . PLIST) where KEY is derived from the
+worktree's relative path under its base directory."
+  (let ((result nil))
+    (dolist (base-dir workset-discovery-directories)
+      (when (file-directory-p base-dir)
+        (dolist (wt (workset-worktree-discover-in-directory base-dir))
+          (let* ((wt-path (plist-get wt :path))
+                 (branch (plist-get wt :branch))
+                 (repo-root (plist-get wt :repo-root))
+                 ;; Key is the relative path under the base directory
+                 (key (file-relative-name wt-path base-dir)))
+            (unless (assoc key result)  ;; dedup
+              (push (cons key (list :repo-root repo-root
+                                    :worktree-path wt-path
+                                    :branch (or branch "")))
+                    result))))))
+    (nreverse result)))
 
 ;;;###autoload
 (defun workset-remove ()
