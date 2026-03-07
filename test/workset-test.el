@@ -889,5 +889,114 @@
             (should (cl-some (lambda (b) (member b '("main" "master"))) branches))))
       (delete-directory tmpdir t))))
 
+;;;; workset--discover-all-worktrees tests
+
+(ert-deftest workset-test-discover-all-worktrees-empty-dirs ()
+  "Returns nil when no discovery directories exist."
+  (let ((workset-discovery-directories '("/nonexistent/path/1"
+                                          "/nonexistent/path/2")))
+    (should (null (workset--discover-all-worktrees)))))
+
+(ert-deftest workset-test-discover-all-worktrees-single-dir ()
+  "Discovers worktrees from a single configured directory."
+  (let* ((tmpdir (make-temp-file "workset-test-all-disc-" t))
+         (repo-dir (expand-file-name "repo" tmpdir))
+         (wt-dir (expand-file-name "worktrees/feature" tmpdir)))
+    (unwind-protect
+        (progn
+          (make-directory repo-dir t)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "init")
+            (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+            (call-process "git" nil nil nil "config" "user.name" "Test")
+            (with-temp-file (expand-file-name "README" repo-dir)
+              (insert "test\n"))
+            (call-process "git" nil nil nil "add" ".")
+            (call-process "git" nil nil nil "commit" "-m" "init"))
+          (workset-worktree-create repo-dir wt-dir "feature-branch")
+          (let* ((wt-parent (expand-file-name "worktrees" tmpdir))
+                 (workset-discovery-directories (list wt-parent))
+                 (result (workset--discover-all-worktrees)))
+            (should (>= (length result) 1))
+            ;; The key should be the relative path of the worktree under the base dir
+            (let ((found (cl-some (lambda (entry)
+                                    (equal (plist-get (cdr entry) :branch) "feature-branch"))
+                                  result)))
+              (should found)))
+          (workset-worktree-remove repo-dir wt-dir))
+      (delete-directory tmpdir t))))
+
+(ert-deftest workset-test-discover-all-worktrees-deduplication ()
+  "Entries from the first directory take precedence; duplicates are skipped."
+  (let* ((tmpdir (make-temp-file "workset-test-all-dedup-" t))
+         (dir1 (expand-file-name "dir1" tmpdir))
+         (dir2 (expand-file-name "dir2" tmpdir))
+         (repo-dir (expand-file-name "repo" tmpdir))
+         (wt1 (expand-file-name "feature" dir1))
+         (wt2 (expand-file-name "feature" dir2)))
+    (unwind-protect
+        (progn
+          (make-directory dir1 t)
+          (make-directory dir2 t)
+          (make-directory repo-dir t)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "init")
+            (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+            (call-process "git" nil nil nil "config" "user.name" "Test")
+            (with-temp-file (expand-file-name "README" repo-dir)
+              (insert "test\n"))
+            (call-process "git" nil nil nil "add" ".")
+            (call-process "git" nil nil nil "commit" "-m" "init"))
+          ;; Create worktrees in both dirs with the same relative path (same key)
+          (workset-worktree-create repo-dir wt1 "branch-in-dir1")
+          (workset-worktree-create repo-dir wt2 "branch-in-dir2")
+          (let* ((workset-discovery-directories (list dir1 dir2))
+                 (result (workset--discover-all-worktrees))
+                 ;; Both worktrees have key "feature"
+                 (feature-entries (cl-remove-if-not
+                                   (lambda (e) (equal (car e) "feature"))
+                                   result)))
+            ;; Should only have one "feature" key — the one from dir1
+            (should (= (length feature-entries) 1))
+            (should (equal (plist-get (cdr (car feature-entries)) :branch)
+                           "branch-in-dir1")))
+          (workset-worktree-remove repo-dir wt1)
+          (workset-worktree-remove repo-dir wt2))
+      (delete-directory tmpdir t))))
+
+(ert-deftest workset-test-discover-all-worktrees-multiple-dirs ()
+  "Discovers worktrees from multiple configured directories."
+  (let* ((tmpdir (make-temp-file "workset-test-all-multi-" t))
+         (dir1 (expand-file-name "dir1" tmpdir))
+         (dir2 (expand-file-name "dir2" tmpdir))
+         (repo-dir (expand-file-name "repo" tmpdir))
+         (wt1 (expand-file-name "task-a" dir1))
+         (wt2 (expand-file-name "task-b" dir2)))
+    (unwind-protect
+        (progn
+          (make-directory dir1 t)
+          (make-directory dir2 t)
+          (make-directory repo-dir t)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "init")
+            (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+            (call-process "git" nil nil nil "config" "user.name" "Test")
+            (with-temp-file (expand-file-name "README" repo-dir)
+              (insert "test\n"))
+            (call-process "git" nil nil nil "add" ".")
+            (call-process "git" nil nil nil "commit" "-m" "init"))
+          (workset-worktree-create repo-dir wt1 "branch-a")
+          (workset-worktree-create repo-dir wt2 "branch-b")
+          (let* ((workset-discovery-directories (list dir1 dir2))
+                 (result (workset--discover-all-worktrees)))
+            ;; Should find both worktrees
+            (should (>= (length result) 2))
+            (let ((keys (mapcar #'car result)))
+              (should (member "task-a" keys))
+              (should (member "task-b" keys))))
+          (workset-worktree-remove repo-dir wt1)
+          (workset-worktree-remove repo-dir wt2))
+      (delete-directory tmpdir t))))
+
 (provide 'workset-test)
 ;;; workset-test.el ends here
