@@ -4,7 +4,7 @@
 
 ;; Author: Eric
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (vterm "0.0.2") (transient "0.4.0"))
+;; Package-Requires: ((emacs "29.1") (vterm "0.0.2") (transient "0.4.0") (magit-section "4.0.0"))
 ;; Keywords: tools, processes, vc
 ;; URL: https://github.com/eric/workset
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -232,6 +232,7 @@ Prefers the stored :task, falls back to remainder of KEY after first /."
 (require 'workset-worktree)
 (require 'workset-vterm)
 (require 'workset-notify)
+(require 'workset-list-mode)
 
 ;;;; Interactive commands
 
@@ -336,70 +337,9 @@ configured discovery directories."
 
 ;;;###autoload
 (defun workset-list ()
-  "Display active worksets and repo worktrees in a temporary buffer.
-Shows active worksets first, then discovered worktrees from each
-directory in `workset-discovery-directories', then all git worktrees
-for the repository at `default-directory' (if any)."
+  "Display worksets in an interactive magit-section buffer."
   (interactive)
-  (let* ((keys (workset--active-keys))
-         (repo-root (workset--git-repo-root))
-         (disc-dirs (workset--discovery-directories))
-         (has-discovery-dirs (cl-some #'file-directory-p disc-dirs)))
-    (if (and (not keys) (not repo-root) (not has-discovery-dirs))
-        (message "No active worksets, no discovery directories found, and not in a git repo")
-      (with-output-to-temp-buffer "*workset-list*"
-        ;; Active worksets
-        (let ((prev-section nil))
-          (when keys
-            (princ "Active Worksets\n")
-            (princ (make-string 40 ?─))
-            (princ "\n")
-            (dolist (key keys)
-              (let* ((ws (workset--get key))
-                     (wt-path (plist-get ws :worktree-path))
-                     (branch (plist-get ws :branch))
-                     (repo-name (workset--ws-repo-name key ws))
-                     (task (workset--ws-task key ws))
-                     (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
-                     (alive (file-directory-p wt-path)))
-                (princ (format "%s\n  branch:   %s\n  worktree: %s%s\n  terminals: %d\n\n"
-                               key branch wt-path
-                               (if alive "" " [STALE]")
-                               (length live-bufs)))))
-            (setq prev-section t))
-          ;; Discovered worktrees from configured directories
-          (dolist (base-dir disc-dirs)
-            (when (file-directory-p base-dir)
-              (let ((worktrees (workset-worktree-discover-in-directory base-dir)))
-                (when worktrees
-                  (when prev-section (princ "\n"))
-                  (princ (format "Discovered Worktrees (%s)\n"
-                                 (abbreviate-file-name base-dir)))
-                  (princ (make-string 40 ?─))
-                  (princ "\n")
-                  (dolist (wt worktrees)
-                    (let* ((wt-path (plist-get wt :path))
-                           (branch (or (plist-get wt :branch) "(detached)"))
-                           (rel-path (file-relative-name wt-path base-dir)))
-                      (princ (format "%s\n  branch: %s\n  path:   %s\n\n"
-                                     rel-path branch wt-path))))
-                  (setq prev-section t)))))
-          ;; Repo worktrees
-          (when repo-root
-            (let ((worktrees (workset-worktree-list repo-root))
-                  (repo-name (workset--repo-name repo-root)))
-              (when worktrees
-                (when prev-section (princ "\n"))
-                (princ (format "Git Worktrees for %s\n" repo-name))
-                (princ (make-string 40 ?─))
-                (princ "\n")
-                (dolist (wt worktrees)
-                  (let* ((path (plist-get wt :path))
-                         (branch (or (plist-get wt :branch) "(detached)"))
-                         (head (plist-get wt :head))
-                         (short-head (if head (substring head 0 (min 8 (length head))) "?")))
-                    (princ (format "%s\n  branch: %s\n  path:   %s\n\n"
-                                   short-head branch path))))))))))))
+  (workset-list-buffer))
 
 (defun workset--git-repo-root ()
   "Return the git repository root for `default-directory', or nil."

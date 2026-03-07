@@ -8,7 +8,7 @@
 (package-file "workset.el")
 
 (files "workset.el" "workset-project.el" "workset-worktree.el" "workset-vterm.el"
-       "workset-notify.el")
+       "workset-notify.el" "workset-list-mode.el")
 
 (source "gnu")
 (source "melpa")
@@ -16,6 +16,7 @@
 (depends-on "emacs" "29.1")
 (depends-on "vterm")
 (depends-on "transient")
+(depends-on "magit-section")
 
 (development
  (depends-on "ert-runner"))
