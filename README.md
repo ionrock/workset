@@ -54,6 +54,89 @@ AI coding agents work best when each task has isolated state:
 (setq workset-vterm-buffer-name-format "*workset: %r/%t<%n>*")
 (setq workset-branch-prefix "eric/")
 (setq workset-start-point "HEAD")
+(setq workset-notify-enabled t)
+(setq workset-notify-method 'modeline-and-message)
+(setq workset-notify-input-patterns
+      '("\\bawaiting your input\\b"
+        "\\bneed your input\\b"
+        "\\bplease respond\\b"))
+(setq workset-notify-idle-seconds 10)
+(setq workset-notify-debounce-seconds 0.5)
+```
+
+## Sound Notifications
+
+workset can play macOS system sounds when an agent finishes or needs
+input.  Sound notifications are only supported on macOS (they are
+silently skipped on other platforms).
+
+### Enabling sound
+
+Set `workset-notify-method` to `modeline-and-sound` to play a sound
+alongside the modeline indicator whenever the buffer is not currently
+visible:
+
+```elisp
+(setq workset-notify-method 'modeline-and-sound)
+```
+
+Other sound-enabled methods:
+
+- `sound` — sound only, no modeline update.
+- `modeline-message-and-sound` — modeline, echo-area message, and sound.
+
+### Available sounds
+
+Sounds are played from `/System/Library/Sounds/`.  The default values
+are `"Glass"` (agent done) and `"Sosumi"` (agent needs input).
+Common alternatives include `"Ping"`, `"Tink"`, `"Pop"`, `"Bottle"`,
+`"Blow"`, `"Frog"`, and `"Hero"`.
+
+Customize via:
+
+```elisp
+(setq workset-notify-sound-done "Glass")
+(setq workset-notify-sound-needs-input "Sosumi")
+```
+
+### Throttle
+
+Rapid repeated state changes will not trigger a new sound until the
+throttle interval has elapsed:
+
+```elisp
+(setq workset-notify-sound-throttle-seconds 5)
+```
+
+Set to `0` to disable throttling.
+
+### Agent presets
+
+Use `M-x workset-notify-use-preset` to load detection patterns tuned
+for a specific AI agent.  Available presets: `claude-code`, `cursor`,
+`aider`.
+
+```elisp
+;; Load the Claude Code preset on startup
+(workset-notify-use-preset 'claude-code)
+```
+
+Preset patterns are merged with (not replace) any existing patterns,
+so custom patterns are preserved.
+
+### Full sound configuration example
+
+```elisp
+(setq workset-notify-enabled t)
+(setq workset-notify-method 'modeline-and-sound)
+(setq workset-notify-sound-enabled t)
+(setq workset-notify-sound-done "Glass")
+(setq workset-notify-sound-needs-input "Sosumi")
+(setq workset-notify-sound-throttle-seconds 5)
+(setq workset-notify-idle-seconds 10)
+(setq workset-notify-debounce-seconds 0.5)
+;; Optional: load agent-specific patterns
+(workset-notify-use-preset 'claude-code)
 ```
 
 ## Usage

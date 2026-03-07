@@ -7,7 +7,8 @@
 
 (package-file "workset.el")
 
-(files "workset.el" "workset-project.el" "workset-worktree.el" "workset-vterm.el")
+(files "workset.el" "workset-project.el" "workset-worktree.el" "workset-vterm.el"
+       "workset-notify.el")
 
 (source "gnu")
 (source "melpa")

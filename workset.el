@@ -30,6 +30,10 @@
 (require 'subr-x)
 (require 'transient)
 
+(let ((workset--dir (file-name-directory (or load-file-name buffer-file-name))))
+  (when workset--dir
+    (add-to-list 'load-path workset--dir)))
+
 ;;;; Customization
 
 (defgroup workset nil
@@ -41,6 +45,41 @@
   "Base directory for workset worktrees.
 Worktrees are stored under BASE/worktrees/REPO/TASK."
   :type 'directory
+  :group 'workset)
+
+(defcustom workset-superset-directory (expand-file-name "~/.superset")
+  "Base directory for superset worktrees.
+Worktrees are stored under SUPERSET/worktrees/[ORG/][OWNER/]TASK."
+  :type 'directory
+  :group 'workset)
+
+(defcustom workset-discovery-directories
+  (list (expand-file-name "worktrees" (expand-file-name "~/.workset"))
+        (expand-file-name "worktrees" (expand-file-name "~/.superset")))
+  "List of directories to scan when discovering existing worktrees."
+  :type '(repeat directory)
+  :group 'workset)
+
+(defcustom workset-create-directory 'superset
+  "Where to create new worktrees.
+`superset' creates worktrees under `workset-superset-directory'.
+`workset' creates worktrees under `workset-base-directory'."
+  :type '(choice (const :tag "Superset directory" superset)
+                 (const :tag "Workset base directory" workset))
+  :group 'workset)
+
+(defcustom workset-default-organization ""
+  "Default organization name for superset-style worktree paths.
+When non-empty, worktrees are placed under
+SUPERSET/worktrees/ORG/[OWNER/]TASK.  Example: \"internal\"."
+  :type 'string
+  :group 'workset)
+
+(defcustom workset-default-owner ""
+  "Default owner name for superset-style worktree paths.
+When non-empty, worktrees are placed under
+SUPERSET/worktrees/[ORG/]OWNER/TASK.  Example: \"eric-larson\"."
+  :type 'string
   :group 'workset)
 
 (defcustom workset-project-backend 'auto
@@ -115,10 +154,31 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
   "Extract the repository name from REPO-ROOT path."
   (file-name-nondirectory (directory-file-name repo-root)))
 
+(defun workset--discovery-directories ()
+  "Return list of directories to scan for worktrees."
+  (list (expand-file-name "worktrees" workset-base-directory)
+        (expand-file-name "worktrees" workset-superset-directory)))
+
 (defun workset--worktree-directory (repo-name task)
-  "Return the worktree directory for REPO-NAME and TASK."
-  (expand-file-name (concat "worktrees/" repo-name "/" task)
-                    workset-base-directory))
+  "Return the worktree directory for REPO-NAME and TASK.
+When `workset-create-directory' is `superset', the path is
+SUPERSET/worktrees/[ORG/][OWNER/]TASK, omitting ORG or OWNER levels
+when their defcustoms are empty strings.
+When `workset-create-directory' is `workset', the path is
+BASE/worktrees/REPO/TASK."
+  (if (eq workset-create-directory 'superset)
+      (let* ((segments (list "worktrees"))
+             (segments (if (string-empty-p workset-default-organization)
+                           segments
+                         (append segments (list workset-default-organization))))
+             (segments (if (string-empty-p workset-default-owner)
+                           segments
+                         (append segments (list workset-default-owner))))
+             (segments (append segments (list task)))
+             (rel-path (mapconcat #'identity segments "/")))
+        (expand-file-name rel-path workset-superset-directory))
+    (expand-file-name (concat "worktrees/" repo-name "/" task)
+                      workset-base-directory)))
 
 (defun workset--key (repo-name task)
   "Return the workset key for REPO-NAME and TASK."
@@ -148,6 +208,7 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
 (require 'workset-project)
 (require 'workset-worktree)
 (require 'workset-vterm)
+(require 'workset-notify)
 
 ;;;; Interactive commands
 
