@@ -224,27 +224,165 @@
     (workset-list-refresh)
     (pop-to-buffer-same-window buffer)))
 
-;;;; Placeholder action commands
+;;;; Helper functions
+
+(defun workset-list--worktree-section-p (section)
+  "Return non-nil if SECTION is a worktree section (not a group)."
+  (or (workset-active-section-p section)
+      (workset-discovered-section-p section)
+      (workset-git-worktree-section-p section)))
+
+(defun workset-list--section-path ()
+  "Return the worktree path for the section at point."
+  (when-let ((section (magit-current-section)))
+    (cond
+     ((workset-active-section-p section)
+      (plist-get (cdr (oref section value)) :worktree-path))
+     ((workset-discovered-section-p section)
+      (plist-get (oref section value) :path))
+     ((workset-git-worktree-section-p section)
+      (plist-get (oref section value) :path)))))
+
+(defun workset-list--section-repo-root ()
+  "Return the repo root for the section at point."
+  (when-let ((section (magit-current-section)))
+    (cond
+     ((workset-active-section-p section)
+      (plist-get (cdr (oref section value)) :repo-root))
+     ((workset-discovered-section-p section)
+      (plist-get (oref section value) :repo-root))
+     ((workset-git-worktree-section-p section)
+      nil))))  ;; git worktree sections don't store repo-root directly
+
+(defun workset-list--section-key ()
+  "Return the workset key for the section at point."
+  (when-let ((section (magit-current-section)))
+    (cond
+     ((workset-active-section-p section)
+      (car (oref section value)))
+     ((workset-discovered-section-p section)
+      (plist-get (oref section value) :key))
+     ((workset-git-worktree-section-p section)
+      ;; Derive from branch
+      (let* ((wt (oref section value))
+             (branch (plist-get wt :branch)))
+        (when branch
+          (replace-regexp-in-string "\\`refs/heads/" "" branch)))))))
+
+(defun workset-list--ensure-active (path key repo-root branch)
+  "Ensure the worktree at PATH is registered as an active workset.
+Return the key."
+  (let ((existing-key (or key (file-name-nondirectory (directory-file-name path)))))
+    (unless (workset--get existing-key)
+      (let* ((repo-name (if repo-root
+                            (file-name-nondirectory (directory-file-name repo-root))
+                          existing-key))
+             (task (file-name-nondirectory (directory-file-name path))))
+        (workset--put existing-key
+                      (list :repo-root (or repo-root path)
+                            :worktree-path path
+                            :branch (or branch "")
+                            :repo-name repo-name
+                            :task task
+                            :vterm-buffers nil))))
+    existing-key))
+
+;;;; Action commands
 
 (defun workset-list-open ()
-  "Open the workset at point."
+  "Open the workset at point: switch to its vterm."
   (interactive)
-  (user-error "Not yet implemented"))
+  (let* ((section (magit-current-section))
+         (path (workset-list--section-path)))
+    (unless (and section (workset-list--worktree-section-p section))
+      (user-error "No worktree section at point"))
+    (unless path
+      (user-error "Cannot determine worktree path"))
+    (unless (file-directory-p path)
+      (user-error "Worktree %s no longer exists" path))
+    (let* ((key (workset-list--section-key))
+           (repo-root (workset-list--section-repo-root))
+           (branch (cond
+                    ((workset-active-section-p section)
+                     (plist-get (cdr (oref section value)) :branch))
+                    ((workset-discovered-section-p section)
+                     (plist-get (oref section value) :branch))
+                    (t nil)))
+           (active-key (workset-list--ensure-active path key repo-root branch))
+           (ws (workset--get active-key))
+           (repo-name (workset--ws-repo-name active-key ws))
+           (task (workset--ws-task active-key ws))
+           (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task)))
+      (if live-bufs
+          (pop-to-buffer-same-window (car live-bufs))
+        (let ((buf (workset-vterm-create path workset-vterm-buffer-name-format repo-name task)))
+          (setq ws (plist-put ws :vterm-buffers (list buf)))
+          (workset--put active-key ws))))))
 
 (defun workset-list-vterm ()
-  "Open a terminal for the workset at point."
+  "Open an additional terminal for the workset at point."
   (interactive)
-  (user-error "Not yet implemented"))
+  (let* ((section (magit-current-section))
+         (path (workset-list--section-path)))
+    (unless (and section (workset-list--worktree-section-p section))
+      (user-error "No worktree section at point"))
+    (unless path
+      (user-error "Cannot determine worktree path"))
+    (unless (file-directory-p path)
+      (user-error "Worktree %s no longer exists" path))
+    (let* ((key (workset-list--section-key))
+           (repo-root (workset-list--section-repo-root))
+           (branch (cond
+                    ((workset-active-section-p section)
+                     (plist-get (cdr (oref section value)) :branch))
+                    ((workset-discovered-section-p section)
+                     (plist-get (oref section value) :branch))
+                    (t nil)))
+           (active-key (workset-list--ensure-active path key repo-root branch))
+           (ws (workset--get active-key))
+           (repo-name (workset--ws-repo-name active-key ws))
+           (task (workset--ws-task active-key ws)))
+      (let* ((buf (workset-vterm-create path workset-vterm-buffer-name-format repo-name task))
+             (bufs (append (plist-get ws :vterm-buffers) (list buf))))
+        (setq ws (plist-put ws :vterm-buffers bufs))
+        (workset--put active-key ws)))))
 
 (defun workset-list-remove ()
   "Remove the workset at point."
   (interactive)
-  (user-error "Not yet implemented"))
+  (let* ((section (magit-current-section))
+         (_path (workset-list--section-path)))
+    (unless (and section (workset-active-section-p section))
+      (user-error "Can only remove active worksets"))
+    (let* ((key (car (oref section value)))
+           (ws (cdr (oref section value)))
+           (wt-path (plist-get ws :worktree-path))
+           (repo-root (plist-get ws :repo-root))
+           (repo-name (workset--ws-repo-name key ws))
+           (task (workset--ws-task key ws)))
+      (unless (yes-or-no-p (format "Remove workset %s? " key))
+        (user-error "Aborted"))
+      ;; Kill vterm buffers
+      (dolist (buf (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))
+      ;; Optionally remove worktree
+      (when (and (file-directory-p wt-path)
+                 (yes-or-no-p (format "Also remove worktree at %s? " wt-path)))
+        (workset-worktree-remove repo-root wt-path))
+      (workset--remove key)
+      (message "Removed workset %s" key)
+      (workset-list-refresh))))
 
 (defun workset-list-dired ()
   "Open dired at the worktree path of the section at point."
   (interactive)
-  (user-error "Not yet implemented"))
+  (let ((path (workset-list--section-path)))
+    (unless path
+      (user-error "No worktree at point"))
+    (unless (file-directory-p path)
+      (user-error "Worktree %s no longer exists" path))
+    (dired path)))
 
 (provide 'workset-list-mode)
 ;;; workset-list-mode.el ends here
