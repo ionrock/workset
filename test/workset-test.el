@@ -82,6 +82,44 @@
   (should (equal (workset--key "myrepo" "fix-bug")
                  "myrepo/fix-bug")))
 
+(ert-deftest workset-test-make-key-workset-mode ()
+  "Test workset--make-key in workset mode uses REPO/TASK."
+  (let ((workset-create-directory 'workset))
+    (should (equal (workset--make-key "myrepo" "fix-bug")
+                   "myrepo/fix-bug"))))
+
+(ert-deftest workset-test-make-key-superset-bare ()
+  "Test workset--make-key in superset mode with no org/owner uses TASK."
+  (let ((workset-create-directory 'superset)
+        (workset-default-organization "")
+        (workset-default-owner ""))
+    (should (equal (workset--make-key "myrepo" "fix-bug")
+                   "fix-bug"))))
+
+(ert-deftest workset-test-make-key-superset-with-owner ()
+  "Test workset--make-key in superset mode with owner uses OWNER/TASK."
+  (let ((workset-create-directory 'superset)
+        (workset-default-organization "")
+        (workset-default-owner "eric-larson"))
+    (should (equal (workset--make-key "myrepo" "fix-bug")
+                   "eric-larson/fix-bug"))))
+
+(ert-deftest workset-test-make-key-superset-with-org-and-owner ()
+  "Test workset--make-key in superset mode with org and owner uses ORG/OWNER/TASK."
+  (let ((workset-create-directory 'superset)
+        (workset-default-organization "internal")
+        (workset-default-owner "eric-larson"))
+    (should (equal (workset--make-key "myrepo" "fix-bug")
+                   "internal/eric-larson/fix-bug"))))
+
+(ert-deftest workset-test-make-key-superset-with-org-only ()
+  "Test workset--make-key in superset mode with org only uses ORG/TASK."
+  (let ((workset-create-directory 'superset)
+        (workset-default-organization "internal")
+        (workset-default-owner ""))
+    (should (equal (workset--make-key "myrepo" "fix-bug")
+                   "internal/fix-bug"))))
+
 (ert-deftest workset-test-put-get-remove ()
   "Test alist operations for active worksets."
   (let ((workset--active-worksets nil))

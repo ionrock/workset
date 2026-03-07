@@ -184,6 +184,22 @@ BASE/worktrees/REPO/TASK."
   "Return the workset key for REPO-NAME and TASK."
   (concat repo-name "/" task))
 
+(defun workset--make-key (repo-name task)
+  "Return the workset key for REPO-NAME and TASK based on current mode.
+In superset mode (`workset-create-directory' is `superset'), the key is
+\[ORG/][OWNER/]TASK using `workset-default-organization' and
+`workset-default-owner'.
+In workset mode, the key is REPO/TASK."
+  (if (eq workset-create-directory 'superset)
+      (let ((parts nil))
+        (unless (string-empty-p workset-default-organization)
+          (push workset-default-organization parts))
+        (unless (string-empty-p workset-default-owner)
+          (push workset-default-owner parts))
+        (push task parts)
+        (mapconcat #'identity (nreverse parts) "/"))
+    (workset--key repo-name task)))
+
 (defun workset--get (key)
   "Return the plist for workset KEY, or nil."
   (cdr (assoc key workset--active-worksets)))
@@ -228,7 +244,7 @@ BASE/worktrees/REPO/TASK."
   (let* ((repo-root (workset-project-select))
          (repo-name (workset--repo-name repo-root))
          (task (read-string (format "Task name for %s: " repo-name)))
-         (key (workset--key repo-name task))
+         (key (workset--make-key repo-name task))
          (branch (concat workset-branch-prefix task))
          (wt-path (workset--worktree-directory repo-name task)))
     (when (string-empty-p task)
@@ -415,7 +431,7 @@ REPO-ROOT is nil or has no linked worktrees."
   "Load BRANCH into a workset for REPO-ROOT with task name TASK.
 Handles remote-tracking refs by creating a local tracking branch."
   (let* ((repo-name (workset--repo-name repo-root))
-         (key (workset--key repo-name task))
+         (key (workset--make-key repo-name task))
          (wt-path (workset--worktree-directory repo-name task)))
     (when (string-empty-p task)
       (user-error "Task name cannot be empty"))
