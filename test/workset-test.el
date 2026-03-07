@@ -86,6 +86,363 @@
     (should (equal (workset-notify--trim-output "abc") "abc"))
     (should (equal (workset-notify--trim-output "abcdef") "bcdef"))))
 
+(ert-deftest workset-test-notify-play-sound-disabled ()
+  "Sound is not played when workset-notify-sound-enabled is nil."
+  (let ((workset-notify-sound-enabled nil)
+        (called nil))
+    (cl-letf (((symbol-function 'start-process)
+               (lambda (&rest _) (setq called t) nil)))
+      (workset-notify--play-sound "Glass" 'done))
+    (should-not called)))
+
+(ert-deftest workset-test-notify-play-sound-non-darwin ()
+  "Sound is not played on non-macOS systems."
+  (let ((workset-notify-sound-enabled t)
+        (called nil))
+    (cl-letf (((symbol-function 'start-process)
+               (lambda (&rest _) (setq called t) nil)))
+      (let ((system-type 'gnu/linux))
+        (workset-notify--play-sound "Glass" 'done)))
+    (should-not called)))
+
+(ert-deftest workset-test-notify-play-sound-throttle ()
+  "Sound is throttled when called too rapidly for the same state."
+  (let ((workset-notify-sound-enabled t)
+        (workset-notify-sound-throttle-seconds 60)
+        (workset-notify-sound-command "afplay")
+        (workset-notify--last-sound-time nil)
+        (call-count 0))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_) t))
+              ((symbol-function 'start-process)
+               (lambda (&rest _) (setq call-count (1+ call-count)) nil)))
+      (let ((system-type 'darwin))
+        ;; First call should play
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 1))
+        ;; Second call within throttle window should NOT play
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 1))))))
+
+(ert-deftest workset-test-notify-play-sound-different-states ()
+  "Sound throttle is per-state: different states are not throttled together."
+  (let ((workset-notify-sound-enabled t)
+        (workset-notify-sound-throttle-seconds 60)
+        (workset-notify-sound-command "afplay")
+        (workset-notify--last-sound-time nil)
+        (call-count 0))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_) t))
+              ((symbol-function 'start-process)
+               (lambda (&rest _) (setq call-count (1+ call-count)) nil)))
+      (let ((system-type 'darwin))
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 1))
+        ;; Different state should still play immediately
+        (workset-notify--play-sound "Sosumi" 'needs-input)
+        (should (= call-count 2))))))
+
+(ert-deftest workset-test-notify-play-sound-missing-file ()
+  "A warning message is emitted when the sound file does not exist."
+  (let ((workset-notify-sound-enabled t)
+        (workset-notify-sound-throttle-seconds 0)
+        (workset-notify-sound-command "afplay")
+        (workset-notify--last-sound-time nil)
+        (warned nil))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_) nil))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (when (string-match-p "sound file not found" (apply #'format fmt args))
+                   (setq warned t)))))
+      (let ((system-type 'darwin))
+        (workset-notify--play-sound "NoSuchSound" 'done)))
+    (should warned)))
+
+(ert-deftest workset-test-notify-claude-code-input-patterns ()
+  "Test that default input patterns detect Claude Code prompt markers."
+  ;; Claude Code prompt marker
+  (should (workset-notify--matches-any workset-notify-input-patterns "> "))
+  ;; Y/n prompts
+  (should (workset-notify--matches-any workset-notify-input-patterns "Do you want to proceed? [Y/n]"))
+  (should (workset-notify--matches-any workset-notify-input-patterns "(y/n)"))
+  (should (workset-notify--matches-any workset-notify-input-patterns "(Y/n)"))
+  (should (workset-notify--matches-any workset-notify-input-patterns "Press enter"))
+  ;; Legacy generic patterns still work
+  (should (workset-notify--matches-any workset-notify-input-patterns "awaiting your input")))
+
+(ert-deftest workset-test-notify-claude-code-done-patterns ()
+  "Test that default done patterns detect Claude Code completion indicators."
+  (should (workset-notify--matches-any workset-notify-done-patterns "✓ Completed"))
+  (should (workset-notify--matches-any workset-notify-done-patterns "✓ Done"))
+  (should (workset-notify--matches-any workset-notify-done-patterns "Task completed"))
+  (should (workset-notify--matches-any workset-notify-done-patterns "Changes applied"))
+  ;; Legacy patterns still work
+  (should (workset-notify--matches-any workset-notify-done-patterns "all done")))
+
+(ert-deftest workset-test-notify-working-patterns ()
+  "Test that default working patterns detect common progress indicators."
+  (should (workset-notify--matches-any workset-notify-working-patterns "Thinking..."))
+  (should (workset-notify--matches-any workset-notify-working-patterns "Analyzing..."))
+  (should (workset-notify--matches-any workset-notify-working-patterns "Reading file"))
+  (should (workset-notify--matches-any workset-notify-working-patterns "Writing file"))
+  (should (workset-notify--matches-any workset-notify-working-patterns "Searching")))
+
+(ert-deftest workset-test-notify-use-preset-merges ()
+  "Test that use-preset merges patterns without overwriting existing ones."
+  (let ((workset-notify-input-patterns '("existing-input"))
+        (workset-notify-done-patterns '("existing-done"))
+        (workset-notify-working-patterns '("existing-working"))
+        (workset-notify-agent-presets
+         '((test-agent
+            :input ("preset-input-1" "preset-input-2")
+            :done ("preset-done-1")
+            :working ("preset-working-1")))))
+    (workset-notify-use-preset 'test-agent)
+    ;; Original patterns preserved
+    (should (member "existing-input" workset-notify-input-patterns))
+    (should (member "existing-done" workset-notify-done-patterns))
+    (should (member "existing-working" workset-notify-working-patterns))
+    ;; Preset patterns appended
+    (should (member "preset-input-1" workset-notify-input-patterns))
+    (should (member "preset-input-2" workset-notify-input-patterns))
+    (should (member "preset-done-1" workset-notify-done-patterns))
+    (should (member "preset-working-1" workset-notify-working-patterns))))
+
+(ert-deftest workset-test-notify-use-preset-no-duplicates ()
+  "Test that use-preset does not add duplicate patterns."
+  (let ((workset-notify-input-patterns '("shared-pattern"))
+        (workset-notify-done-patterns nil)
+        (workset-notify-working-patterns nil)
+        (workset-notify-agent-presets
+         '((test-agent
+            :input ("shared-pattern" "new-pattern")
+            :done nil
+            :working nil))))
+    (workset-notify-use-preset 'test-agent)
+    ;; shared-pattern appears only once
+    (should (= 1 (cl-count "shared-pattern" workset-notify-input-patterns :test #'equal)))
+    ;; new-pattern was added
+    (should (member "new-pattern" workset-notify-input-patterns))))
+
+(ert-deftest workset-test-notify-use-preset-unknown-agent ()
+  "Test that use-preset signals an error for unknown agents."
+  (let ((workset-notify-agent-presets '((known-agent :input nil :done nil :working nil))))
+    (should-error (workset-notify-use-preset 'unknown-agent) :type 'user-error)))
+
+(ert-deftest workset-test-notify-preset-claude-code-exists ()
+  "Test that the claude-code preset is defined with expected keys."
+  (let ((preset (alist-get 'claude-code workset-notify-agent-presets)))
+    (should preset)
+    (should (plist-get preset :input))
+    (should (plist-get preset :done))
+    (should (plist-get preset :working))))
+
+(ert-deftest workset-test-notify-emit-modeline-no-sound ()
+  "Test that modeline method does not call play-sound."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'modeline)
+        (sound-called nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (_sound _state) (setq sound-called t)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () nil)))
+      (workset-notify--emit 'done)
+      (should-not sound-called))))
+
+(ert-deftest workset-test-notify-emit-modeline-and-sound-hidden ()
+  "Test that modeline-and-sound plays sound when buffer is hidden."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'modeline-and-sound)
+        (workset-notify-sound-done "Glass")
+        (workset-notify-sound-needs-input "Sosumi")
+        (sound-calls nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (sound state) (push (list sound state) sound-calls)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () nil)))
+      (workset-notify--emit 'done)
+      (should (equal (length sound-calls) 1))
+      (should (equal (car sound-calls) (list "Glass" 'done))))))
+
+(ert-deftest workset-test-notify-emit-modeline-and-sound-visible ()
+  "Test that modeline-and-sound does not play sound when buffer is visible."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'modeline-and-sound)
+        (sound-called nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (_sound _state) (setq sound-called t)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () t)))
+      (workset-notify--emit 'done)
+      (should-not sound-called))))
+
+(ert-deftest workset-test-notify-emit-sound-only-hidden ()
+  "Test that sound method plays sound only when buffer is hidden."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'sound)
+        (workset-notify-sound-needs-input "Sosumi")
+        (sound-calls nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (sound state) (push (list sound state) sound-calls)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () nil)))
+      (workset-notify--emit 'needs-input)
+      (should (equal (length sound-calls) 1))
+      (should (equal (car sound-calls) (list "Sosumi" 'needs-input))))))
+
+(ert-deftest workset-test-notify-emit-modeline-message-and-sound ()
+  "Test that modeline-message-and-sound sends message and plays sound."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'modeline-message-and-sound)
+        (workset-notify-sound-done "Glass")
+        (sound-calls nil)
+        (messages nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (sound state) (push (list sound state) sound-calls)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () nil))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (workset-notify--emit 'done)
+      (should (equal (length sound-calls) 1))
+      (should (equal (car sound-calls) (list "Glass" 'done)))
+      (should (= (length messages) 1)))))
+
+(ert-deftest workset-test-notify-emit-backward-compat ()
+  "Test that existing methods modeline-and-message and modeline-and-warning work."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done))
+        (messages nil)
+        (warnings nil))
+    ;; modeline-and-message
+    (let ((workset-notify-method 'modeline-and-message))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+        (workset-notify--emit 'done)))
+    (should (= (length messages) 1))
+    ;; modeline-and-warning
+    (let ((workset-notify-method 'modeline-and-warning))
+      (cl-letf (((symbol-function 'display-warning)
+                 (lambda (_type msg &rest _) (push msg warnings))))
+        (workset-notify--emit 'done)))
+    (should (= (length warnings) 1))))
+
+(ert-deftest workset-test-notify-buffer-visible-p-hidden ()
+  "Test that buffer-visible-p returns nil when buffer has no window."
+  (let ((buf (generate-new-buffer " *workset-test-hidden*")))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Buffer has no window, so should not be visible
+          (should-not (workset-notify--buffer-visible-p)))
+      (kill-buffer buf))))
+
+(ert-deftest workset-test-notify-buffer-visible-p-visible ()
+  "Test that buffer-visible-p returns non-nil when buffer is shown in a window."
+  (let ((buf (generate-new-buffer " *workset-test-visible*")))
+    (unwind-protect
+        (let ((win (display-buffer buf)))
+          (unwind-protect
+              (with-current-buffer buf
+                (should (workset-notify--buffer-visible-p)))
+            (delete-window win)))
+      (kill-buffer buf))))
+
+(ert-deftest workset-test-notify-play-sound-zero-throttle ()
+  "Sound is played every time when throttle is set to zero."
+  (let ((workset-notify-sound-enabled t)
+        (workset-notify-sound-throttle-seconds 0)
+        (workset-notify-sound-command "afplay")
+        (workset-notify--last-sound-time nil)
+        (call-count 0))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_) t))
+              ((symbol-function 'start-process)
+               (lambda (&rest _) (setq call-count (1+ call-count)) nil)))
+      (let ((system-type 'darwin))
+        ;; First call should play
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 1))
+        ;; Second call with zero throttle should also play
+        (workset-notify--play-sound "Glass" 'done)
+        (should (= call-count 2))))))
+
+(ert-deftest workset-test-notify-emit-disabled ()
+  "Test that emit does nothing when workset-notify-enabled is nil."
+  (let ((workset-notify-enabled nil)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'modeline-and-message)
+        (messages nil)
+        (sound-called nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages)))
+              ((symbol-function 'workset-notify--play-sound)
+               (lambda (_sound _state) (setq sound-called t))))
+      (workset-notify--emit 'done)
+      (should (null messages))
+      (should-not sound-called))))
+
+(ert-deftest workset-test-notify-emit-state-not-in-notify-states ()
+  "Test that emit does nothing for states not in workset-notify-notify-states."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done))
+        (workset-notify-method 'modeline-and-message)
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      ;; needs-input is not in notify-states
+      (workset-notify--emit 'needs-input)
+      (should (null messages)))))
+
+(ert-deftest workset-test-notify-emit-needs-input-with-sound-hidden ()
+  "Test that needs-input state plays correct sound with modeline-and-sound."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(needs-input done))
+        (workset-notify-method 'modeline-and-sound)
+        (workset-notify-sound-needs-input "Sosumi")
+        (sound-calls nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (sound state) (push (list sound state) sound-calls)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () nil)))
+      (workset-notify--emit 'needs-input)
+      (should (equal (length sound-calls) 1))
+      (should (equal (car sound-calls) (list "Sosumi" 'needs-input))))))
+
+(ert-deftest workset-test-notify-emit-modeline-message-and-sound-visible ()
+  "Test that modeline-message-and-sound sends message but not sound when visible."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'modeline-message-and-sound)
+        (workset-notify-sound-done "Glass")
+        (sound-called nil)
+        (messages nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (_sound _state) (setq sound-called t)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () t))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (workset-notify--emit 'done)
+      ;; Message should still be sent even when visible
+      (should (= (length messages) 1))
+      ;; But sound should not play since buffer is visible
+      (should-not sound-called))))
+
+(ert-deftest workset-test-notify-emit-sound-visible-no-play ()
+  "Test that sound method does not play when buffer is visible."
+  (let ((workset-notify-enabled t)
+        (workset-notify-notify-states '(done needs-input))
+        (workset-notify-method 'sound)
+        (sound-called nil))
+    (cl-letf (((symbol-function 'workset-notify--play-sound)
+               (lambda (_sound _state) (setq sound-called t)))
+              ((symbol-function 'workset-notify--buffer-visible-p)
+               (lambda () t)))
+      (workset-notify--emit 'done)
+      (should-not sound-called))))
+
 ;;;; vterm buffer naming tests
 
 (ert-deftest workset-test-format-buffer-name ()

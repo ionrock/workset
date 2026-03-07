@@ -7,7 +7,11 @@
 
 ;;; Commentary:
 
-;; Detect agent output in vterm buffers and notify via modeline/messages.
+;; Detect agent output in vterm buffers and notify via modeline, messages,
+;; and/or sounds.  Supports macOS system sounds via `afplay' when
+;; `workset-notify-method' includes sound (e.g. `modeline-and-sound').
+;; Agent-specific detection patterns can be loaded via
+;; `workset-notify-use-preset'.
 
 ;;; Code:
 
@@ -25,17 +29,35 @@
   :group 'workset-notify)
 
 (defcustom workset-notify-input-patterns
-  '("\\bawaiting your input\\b"
+  '(;; Claude Code: prompt marker / waiting state
+    "^> $"
+    "\\? \\[Y/n\\]"
+    "\\? \\[y/N\\]"
+    ;; Generic input/confirmation prompts
+    "\\bDo you want to proceed\\b"
+    "\\bawaiting your input\\b"
     "\\bneed your input\\b"
     "\\bplease respond\\b"
     "\\benter to continue\\b"
-    "\\bpress (enter|return) to continue\\b")
+    "\\bpress \\(enter\\|return\\) to continue\\b"
+    "\\[Y/n\\]"
+    "\\[y/N\\]"
+    "(y/n)"
+    "(Y/n)"
+    "Press enter")
   "Regex patterns that indicate an agent is waiting for user input."
   :type '(repeat string)
   :group 'workset-notify)
 
 (defcustom workset-notify-done-patterns
-  '("\\ball done\\b"
+  '(;; Claude Code: idle/done state indicator
+    "✓ Completed"
+    "✓ Done"
+    "⎿ .* completed"
+    ;; Generic done patterns
+    "\\bTask completed\\b"
+    "\\bChanges applied\\b"
+    "\\ball done\\b"
     "\\btask complete\\b"
     "\\bfinished\\b"
     "\\bcompleted\\b"
@@ -44,11 +66,64 @@
   :type '(repeat string)
   :group 'workset-notify)
 
-(defcustom workset-notify-working-patterns nil
+(defcustom workset-notify-working-patterns
+  '(;; Claude Code / generic progress indicators
+    "\\bThinking\\.\\.\\.\\b"
+    "\\bAnalyzing\\.\\.\\.\\b"
+    "\\bReading file\\b"
+    "\\bWriting file\\b"
+    "\\bRunning\\b"
+    "\\bSearching\\b")
   "Optional regex patterns that indicate an agent is actively working.
 If nil, any output counts as working."
   :type '(choice (const :tag "Any output" nil)
                  (repeat string))
+  :group 'workset-notify)
+
+(defcustom workset-notify-agent-presets
+  '((claude-code
+     :input ("^> $"
+             "\\? \\[Y/n\\]"
+             "\\? \\[y/N\\]"
+             "\\bDo you want to proceed\\b"
+             "\\bPress enter\\b")
+     :done ("✓ Completed"
+            "✓ Done"
+            "⎿ .* completed"
+            "\\bTask completed\\b"
+            "\\bChanges applied\\b")
+     :working ("\\bThinking\\.\\.\\.\\b"
+               "\\bAnalyzing\\.\\.\\.\\b"
+               "\\bReading file\\b"
+               "\\bWriting file\\b"))
+    (cursor
+     :input ("\\bDo you want to proceed\\b"
+             "\\[Y/n\\]"
+             "(y/n)"
+             "\\bPress enter\\b")
+     :done ("\\bTask completed\\b"
+            "\\bChanges applied\\b"
+            "\\bDone\\b")
+     :working ("\\bThinking\\.\\.\\.\\b"
+               "\\bAnalyzing\\.\\.\\.\\b"
+               "\\bApplying changes\\b"))
+    (aider
+     :input ("\\bDo you want to proceed\\b"
+             "^aider> $"
+             "\\[Y/n\\]"
+             "(y/n)")
+     :done ("\\bFiles? \\(created\\|edited\\)\\b"
+            "\\bChanges applied\\b"
+            "\\bTask completed\\b")
+     :working ("\\bSearching\\b"
+               "\\bAnalyzing\\.\\.\\.\\b"
+               "\\bReading file\\b"
+               "\\bWriting file\\b")))
+  "Alist mapping agent name symbols to pattern lists.
+Each entry has the form (AGENT-NAME :input PATS :done PATS :working PATS).
+Use `workset-notify-use-preset' to load a preset."
+  :type '(alist :key-type symbol
+                :value-type (plist :key-type symbol :value-type (repeat string)))
   :group 'workset-notify)
 
 (defcustom workset-notify-notify-states '(needs-input done)
@@ -57,10 +132,27 @@ If nil, any output counts as working."
   :group 'workset-notify)
 
 (defcustom workset-notify-method 'modeline
-  "Notification method to use when state changes."
+  "Notification method to use when state changes.
+
+Available methods:
+- `modeline': update the modeline indicator only.
+- `modeline-and-message': modeline plus an echo-area message.
+- `modeline-and-warning': modeline plus a `display-warning' popup.
+- `modeline-and-sound': modeline plus a macOS system sound when the
+  buffer is not currently visible.
+- `sound': play a macOS system sound (no modeline update).
+- `modeline-message-and-sound': modeline, echo-area message, and sound.
+
+Sound methods require macOS and use `workset-notify-sound-command' to
+play files from /System/Library/Sounds/.  See also
+`workset-notify-sound-done', `workset-notify-sound-needs-input', and
+`workset-notify-sound-throttle-seconds'."
   :type '(choice (const :tag "Modeline only" modeline)
                  (const :tag "Modeline + message" modeline-and-message)
-                 (const :tag "Modeline + warning" modeline-and-warning))
+                 (const :tag "Modeline + warning" modeline-and-warning)
+                 (const :tag "Modeline + sound" modeline-and-sound)
+                 (const :tag "Sound only" sound)
+                 (const :tag "Modeline + message + sound" modeline-message-and-sound))
   :group 'workset-notify)
 
 (defcustom workset-notify-max-output 2000
@@ -93,6 +185,42 @@ Set to nil to disable idle detection."
   :type '(repeat symbol)
   :group 'workset-notify)
 
+(defcustom workset-notify-sound-enabled t
+  "Whether to play sounds on state notifications.
+Has effect only when `workset-notify-method' is a sound-enabled method
+such as `modeline-and-sound', `sound', or `modeline-message-and-sound'.
+Sound playback is always a no-op on non-macOS systems regardless of
+this setting."
+  :type 'boolean
+  :group 'workset-notify)
+
+(defcustom workset-notify-sound-done "Glass"
+  "Sound name to play when an agent finishes.
+Must be the base name of a file in /System/Library/Sounds/ (without .aiff)."
+  :type 'string
+  :group 'workset-notify)
+
+(defcustom workset-notify-sound-needs-input "Sosumi"
+  "Sound name to play when an agent needs input.
+Must be the base name of a file in /System/Library/Sounds/ (without .aiff)."
+  :type 'string
+  :group 'workset-notify)
+
+(defcustom workset-notify-sound-command "afplay"
+  "Shell command used to play a sound file on macOS.
+The command is invoked as an asynchronous subprocess with the absolute
+path to an AIFF file as its sole argument.  The default `afplay' is
+available on all macOS systems.  Change this only if you need a
+custom audio player."
+  :type 'string
+  :group 'workset-notify)
+
+(defcustom workset-notify-sound-throttle-seconds 5
+  "Minimum seconds between repeated sounds for the same state.
+Prevents rapid repeated sound notifications."
+  :type 'number
+  :group 'workset-notify)
+
 (defface workset-notify-needs-input-face
   '((t :weight bold :foreground "orange"))
   "Face for input-needed modeline indicator."
@@ -113,13 +241,47 @@ Set to nil to disable idle detection."
   "Face for idle modeline indicator."
   :group 'workset-notify)
 
-(defvar workset-notify--window-hook-installed nil)
+(defvar workset-notify--window-hook-installed nil
+  "Non-nil when the global window-selection-change hook has been installed.")
 
-(defvar-local workset-notify--state nil)
-(defvar-local workset-notify--recent-output "")
-(defvar-local workset-notify--mode-line-cell nil)
-(defvar-local workset-notify--last-change-time 0)
-(defvar-local workset-notify--idle-timer nil)
+(defvar-local workset-notify--state nil
+  "Current notification state for this buffer.
+One of nil, `working', `needs-input', `done', or `idle'.")
+(defvar-local workset-notify--recent-output ""
+  "Accumulated recent vterm output used for pattern matching.")
+(defvar-local workset-notify--mode-line-cell nil
+  "The modeline (:eval ...) cell added to `mode-line-format'.")
+(defvar-local workset-notify--last-change-time 0
+  "Float time of the last state change, used for debouncing.")
+(defvar-local workset-notify--idle-timer nil
+  "Timer that fires to set the buffer state to `idle'.")
+(defvar-local workset-notify--last-sound-time nil
+  "Alist mapping state symbol to the `float-time' when that sound was last played.")
+
+(defun workset-notify--play-sound (sound-name state)
+  "Play SOUND-NAME asynchronously for STATE if conditions allow.
+SOUND-NAME is the base name of a file under /System/Library/Sounds/.
+STATE is the notification state symbol used for throttle tracking.
+Does nothing when `workset-notify-sound-enabled' is nil, when not on
+macOS, or when the sound was played too recently (see
+`workset-notify-sound-throttle-seconds')."
+  (when (and workset-notify-sound-enabled
+             (eq system-type 'darwin))
+    (let* ((now (float-time))
+           (last (cdr (assq state workset-notify--last-sound-time)))
+           (throttle workset-notify-sound-throttle-seconds))
+      (when (or (null last)
+                (<= throttle 0)
+                (>= (- now last) throttle))
+        (let ((path (format "/System/Library/Sounds/%s.aiff" sound-name)))
+          (if (file-exists-p path)
+              (progn
+                (setq workset-notify--last-sound-time
+                      (cons (cons state now)
+                            (assq-delete-all state workset-notify--last-sound-time)))
+                (start-process "workset-notify-sound" nil
+                               workset-notify-sound-command path))
+            (message "workset-notify: sound file not found: %s" path)))))))
 
 (defun workset-notify--matches-any (patterns text)
   "Return non-nil if any regex in PATTERNS matches TEXT."
@@ -156,6 +318,10 @@ Set to nil to disable idle detection."
     (setq-local mode-line-format
                 (append mode-line-format (list workset-notify--mode-line-cell)))))
 
+(defun workset-notify--buffer-visible-p ()
+  "Return non-nil if the current buffer is visible in any window."
+  (get-buffer-window (current-buffer)))
+
 (defun workset-notify--emit (state)
   "Emit Emacs notifications for STATE if configured."
   (when (and workset-notify-enabled (memq state workset-notify-notify-states))
@@ -170,7 +336,33 @@ Set to nil to disable idle detection."
            (message "Workset: %s %s" (buffer-name) label))
           ('modeline-and-warning
            (display-warning 'workset (format "Workset: %s %s" (buffer-name) label)
-                            :warning)))))))
+                            :warning))
+          ('modeline-and-sound
+           (when (not (workset-notify--buffer-visible-p))
+             (let ((sound (pcase state
+                            ('done workset-notify-sound-done)
+                            ('needs-input workset-notify-sound-needs-input)
+                            (_ nil))))
+               (when sound
+                 (workset-notify--play-sound sound state)))))
+          ('sound
+           (when (not (workset-notify--buffer-visible-p))
+             (let ((sound (pcase state
+                            ('done workset-notify-sound-done)
+                            ('needs-input workset-notify-sound-needs-input)
+                            (_ nil))))
+               (when sound
+                 (workset-notify--play-sound sound state)))))
+          ('modeline-message-and-sound
+           (message "Workset: %s %s" (buffer-name) label)
+           (when (not (workset-notify--buffer-visible-p))
+             (let ((sound (pcase state
+                            ('done workset-notify-sound-done)
+                            ('needs-input workset-notify-sound-needs-input)
+                            (_ nil))))
+               (when sound
+                 (workset-notify--play-sound sound state))))))))))
+
 
 (defun workset-notify--set-state (state)
   "Set notification STATE and update UI."
@@ -255,6 +447,7 @@ Set to nil to disable idle detection."
         (setq-local workset-notify--state nil)
         (setq-local workset-notify--recent-output "")
         (setq-local workset-notify--last-change-time 0)
+        (setq-local workset-notify--last-sound-time nil)
         (workset-notify--ensure-modeline)
         (workset-notify--ensure-window-hook)
         (add-hook 'vterm-output-filter-functions #'workset-notify--output-filter nil t)
@@ -279,6 +472,36 @@ Set to nil to disable idle detection."
   "Enable `workset-notify-mode' in the current buffer if appropriate."
   (when (and workset-notify-enabled (derived-mode-p 'vterm-mode))
     (workset-notify-mode 1)))
+
+;;;###autoload
+(defun workset-notify-use-preset (agent)
+  "Merge patterns from AGENT preset into the current pattern variables.
+AGENT must be a key in `workset-notify-agent-presets'.
+Existing custom patterns are preserved; preset patterns are appended
+if not already present."
+  (interactive
+   (list (intern (completing-read "Agent preset: "
+                                  (mapcar #'car workset-notify-agent-presets)
+                                  nil t))))
+  (let ((preset (alist-get agent workset-notify-agent-presets)))
+    (unless preset
+      (user-error "Unknown agent preset: %s" agent))
+    (let ((input-pats (plist-get preset :input))
+          (done-pats (plist-get preset :done))
+          (working-pats (plist-get preset :working)))
+      (dolist (pat input-pats)
+        (unless (member pat workset-notify-input-patterns)
+          (setq workset-notify-input-patterns
+                (append workset-notify-input-patterns (list pat)))))
+      (dolist (pat done-pats)
+        (unless (member pat workset-notify-done-patterns)
+          (setq workset-notify-done-patterns
+                (append workset-notify-done-patterns (list pat)))))
+      (dolist (pat working-pats)
+        (unless (member pat workset-notify-working-patterns)
+          (setq workset-notify-working-patterns
+                (append workset-notify-working-patterns (list pat)))))
+      (message "workset-notify: loaded preset %s" agent))))
 
 (provide 'workset-notify)
 ;;; workset-notify.el ends here
