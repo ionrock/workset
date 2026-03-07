@@ -161,7 +161,7 @@ Returns a list of plists with :path, :branch, :repo-root, and :type keys.
 TYPE is either `linked' (linked worktree) or `main' (standalone repo)."
   (let ((depth (or max-depth 4))
         (result nil)
-        (skip-dirs '(".git" "node_modules" ".cache" "elpa")))
+        (skip-dirs '(".git" "node_modules" ".cache" "elpa" ".venv" ".tox")))
     (cl-labels ((walk (dir level)
       (when (and (file-directory-p dir) (<= level depth))
         (let ((dot-git (expand-file-name ".git" dir)))

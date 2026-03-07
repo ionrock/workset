@@ -54,13 +54,6 @@ Worktrees are stored under SUPERSET/worktrees/[ORG/][OWNER/]TASK."
   :type 'directory
   :group 'workset)
 
-(defcustom workset-discovery-directories
-  (list (expand-file-name "worktrees" (expand-file-name "~/.workset"))
-        (expand-file-name "worktrees" (expand-file-name "~/.superset")))
-  "List of directories to scan when discovering existing worktrees."
-  :type '(repeat directory)
-  :group 'workset)
-
 (defcustom workset-create-directory 'superset
   "Where to create new worktrees.
 `superset' creates worktrees under `workset-superset-directory'.
@@ -201,6 +194,19 @@ In workset mode, the key is REPO/TASK."
         (mapconcat #'identity (nreverse parts) "/"))
     (workset--key repo-name task)))
 
+(defun workset--ws-repo-name (key ws)
+  "Return the repo name for workset KEY with plist WS.
+Prefers the stored :repo-name, falls back to first component of KEY."
+  (or (plist-get ws :repo-name)
+      (car (split-string key "/"))))
+
+(defun workset--ws-task (key ws)
+  "Return the task name for workset KEY with plist WS.
+Prefers the stored :task, falls back to remainder of KEY after first /."
+  (or (plist-get ws :task)
+      (let ((parts (split-string key "/")))
+        (mapconcat #'identity (cdr parts) "/"))))
+
 (defun workset--get (key)
   "Return the plist for workset KEY, or nil."
   (cdr (assoc key workset--active-worksets)))
@@ -262,6 +268,8 @@ In workset mode, the key is REPO/TASK."
                     (list :repo-root repo-root
                           :worktree-path wt-path
                           :branch branch
+                          :repo-name repo-name
+                          :task task
                           :vterm-buffers (list buf)))
       (message "Created workset %s" key))))
 
@@ -295,9 +303,8 @@ configured discovery directories."
       (unless (file-directory-p wt-path)
         (workset--remove key)
         (user-error "Worktree %s no longer exists; workset removed" wt-path))
-      (let* ((parts (split-string key "/"))
-             (repo-name (car parts))
-             (task (mapconcat #'identity (cdr parts) "/"))
+      (let* ((repo-name (workset--ws-repo-name key ws))
+             (task (workset--ws-task key ws))
              (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task)))
         (if live-bufs
             (progn
@@ -317,9 +324,8 @@ configured discovery directories."
          (key (completing-read "Add terminal to workset: " keys nil t))
          (ws (workset--get key))
          (wt-path (plist-get ws :worktree-path))
-         (parts (split-string key "/"))
-         (repo-name (car parts))
-         (task (mapconcat #'identity (cdr parts) "/")))
+         (repo-name (workset--ws-repo-name key ws))
+         (task (workset--ws-task key ws)))
     (unless (file-directory-p wt-path)
       (workset--remove key)
       (user-error "Worktree %s no longer exists; workset removed" wt-path))
@@ -337,7 +343,8 @@ for the repository at `default-directory' (if any)."
   (interactive)
   (let* ((keys (workset--active-keys))
          (repo-root (workset--git-repo-root))
-         (has-discovery-dirs (cl-some #'file-directory-p workset-discovery-directories)))
+         (disc-dirs (workset--discovery-directories))
+         (has-discovery-dirs (cl-some #'file-directory-p disc-dirs)))
     (if (and (not keys) (not repo-root) (not has-discovery-dirs))
         (message "No active worksets, no discovery directories found, and not in a git repo")
       (with-output-to-temp-buffer "*workset-list*"
@@ -351,9 +358,8 @@ for the repository at `default-directory' (if any)."
               (let* ((ws (workset--get key))
                      (wt-path (plist-get ws :worktree-path))
                      (branch (plist-get ws :branch))
-                     (parts (split-string key "/"))
-                     (repo-name (car parts))
-                     (task (mapconcat #'identity (cdr parts) "/"))
+                     (repo-name (workset--ws-repo-name key ws))
+                     (task (workset--ws-task key ws))
                      (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
                      (alive (file-directory-p wt-path)))
                 (princ (format "%s\n  branch:   %s\n  worktree: %s%s\n  terminals: %d\n\n"
@@ -362,7 +368,7 @@ for the repository at `default-directory' (if any)."
                                (length live-bufs)))))
             (setq prev-section t))
           ;; Discovered worktrees from configured directories
-          (dolist (base-dir workset-discovery-directories)
+          (dolist (base-dir disc-dirs)
             (when (file-directory-p base-dir)
               (let ((worktrees (workset-worktree-discover-in-directory base-dir)))
                 (when worktrees
@@ -425,7 +431,9 @@ REPO-ROOT is nil or has no linked worktrees."
                    (key (workset--key repo-name task)))
               (push (cons key (list :repo-root repo-root
                                     :worktree-path wt-path
-                                    :branch branch))
+                                    :branch branch
+                                    :repo-name repo-name
+                                    :task task))
                     result)))))
       (nreverse result))))
 
@@ -434,18 +442,26 @@ REPO-ROOT is nil or has no linked worktrees."
 Returns an alist of (KEY . PLIST) where KEY is derived from the
 worktree's relative path under its base directory."
   (let ((result nil))
-    (dolist (base-dir workset-discovery-directories)
+    (dolist (base-dir (workset--discovery-directories))
       (when (file-directory-p base-dir)
         (dolist (wt (workset-worktree-discover-in-directory base-dir))
           (let* ((wt-path (plist-get wt :path))
                  (branch (plist-get wt :branch))
                  (repo-root (plist-get wt :repo-root))
                  ;; Key is the relative path under the base directory
-                 (key (file-relative-name wt-path base-dir)))
+                 (key (file-relative-name wt-path base-dir))
+                 ;; Use the last path component as the task name
+                 (task (file-name-nondirectory (directory-file-name wt-path)))
+                 ;; Use the repo directory name as repo-name
+                 (repo-name (when repo-root
+                              (file-name-nondirectory
+                               (directory-file-name repo-root)))))
             (unless (assoc key result)  ;; dedup
               (push (cons key (list :repo-root repo-root
                                     :worktree-path wt-path
-                                    :branch (or branch "")))
+                                    :branch (or branch "")
+                                    :repo-name (or repo-name key)
+                                    :task task))
                     result))))))
     (nreverse result)))
 
@@ -459,9 +475,8 @@ worktree's relative path under its base directory."
          (ws (workset--get key))
          (wt-path (plist-get ws :worktree-path))
          (repo-root (plist-get ws :repo-root))
-         (parts (split-string key "/"))
-         (repo-name (car parts))
-         (task (mapconcat #'identity (cdr parts) "/")))
+         (repo-name (workset--ws-repo-name key ws))
+         (task (workset--ws-task key ws)))
     ;; Kill vterm buffers
     (dolist (buf (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
       (when (buffer-live-p buf)
@@ -514,6 +529,8 @@ Handles remote-tracking refs by creating a local tracking branch."
                     (list :repo-root repo-root
                           :worktree-path wt-path
                           :branch branch
+                          :repo-name repo-name
+                          :task task
                           :vterm-buffers (list buf)))
       (message "Loaded workset %s" key))))
 
