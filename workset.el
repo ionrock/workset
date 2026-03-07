@@ -331,48 +331,69 @@ configured discovery directories."
 ;;;###autoload
 (defun workset-list ()
   "Display active worksets and repo worktrees in a temporary buffer.
-Shows active worksets first, then all git worktrees for the
-repository at `default-directory' (if any)."
+Shows active worksets first, then discovered worktrees from each
+directory in `workset-discovery-directories', then all git worktrees
+for the repository at `default-directory' (if any)."
   (interactive)
-  (let ((keys (workset--active-keys))
-        (repo-root (workset--git-repo-root)))
-    (if (and (not keys) (not repo-root))
-        (message "No active worksets and not in a git repo")
+  (let* ((keys (workset--active-keys))
+         (repo-root (workset--git-repo-root))
+         (has-discovery-dirs (cl-some #'file-directory-p workset-discovery-directories)))
+    (if (and (not keys) (not repo-root) (not has-discovery-dirs))
+        (message "No active worksets, no discovery directories found, and not in a git repo")
       (with-output-to-temp-buffer "*workset-list*"
         ;; Active worksets
-        (when keys
-          (princ "Active Worksets\n")
-          (princ (make-string 40 ?─))
-          (princ "\n")
-          (dolist (key keys)
-            (let* ((ws (workset--get key))
-                   (wt-path (plist-get ws :worktree-path))
-                   (branch (plist-get ws :branch))
-                   (parts (split-string key "/"))
-                   (repo-name (car parts))
-                   (task (mapconcat #'identity (cdr parts) "/"))
-                   (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
-                   (alive (file-directory-p wt-path)))
-              (princ (format "%s\n  branch:   %s\n  worktree: %s%s\n  terminals: %d\n\n"
-                             key branch wt-path
-                             (if alive "" " [STALE]")
-                             (length live-bufs))))))
-        ;; Repo worktrees
-        (when repo-root
-          (let ((worktrees (workset-worktree-list repo-root))
-                (repo-name (workset--repo-name repo-root)))
-            (when worktrees
-              (when keys (princ "\n"))
-              (princ (format "Git Worktrees for %s\n" repo-name))
-              (princ (make-string 40 ?─))
-              (princ "\n")
-              (dolist (wt worktrees)
-                (let* ((path (plist-get wt :path))
-                       (branch (or (plist-get wt :branch) "(detached)"))
-                       (head (plist-get wt :head))
-                       (short-head (if head (substring head 0 (min 8 (length head))) "?")))
-                  (princ (format "%s\n  branch: %s\n  path:   %s\n\n"
-                                 short-head branch path)))))))))))
+        (let ((prev-section nil))
+          (when keys
+            (princ "Active Worksets\n")
+            (princ (make-string 40 ?─))
+            (princ "\n")
+            (dolist (key keys)
+              (let* ((ws (workset--get key))
+                     (wt-path (plist-get ws :worktree-path))
+                     (branch (plist-get ws :branch))
+                     (parts (split-string key "/"))
+                     (repo-name (car parts))
+                     (task (mapconcat #'identity (cdr parts) "/"))
+                     (live-bufs (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
+                     (alive (file-directory-p wt-path)))
+                (princ (format "%s\n  branch:   %s\n  worktree: %s%s\n  terminals: %d\n\n"
+                               key branch wt-path
+                               (if alive "" " [STALE]")
+                               (length live-bufs)))))
+            (setq prev-section t))
+          ;; Discovered worktrees from configured directories
+          (dolist (base-dir workset-discovery-directories)
+            (when (file-directory-p base-dir)
+              (let ((worktrees (workset-worktree-discover-in-directory base-dir)))
+                (when worktrees
+                  (when prev-section (princ "\n"))
+                  (princ (format "Discovered Worktrees (%s)\n"
+                                 (abbreviate-file-name base-dir)))
+                  (princ (make-string 40 ?─))
+                  (princ "\n")
+                  (dolist (wt worktrees)
+                    (let* ((wt-path (plist-get wt :path))
+                           (branch (or (plist-get wt :branch) "(detached)"))
+                           (rel-path (file-relative-name wt-path base-dir)))
+                      (princ (format "%s\n  branch: %s\n  path:   %s\n\n"
+                                     rel-path branch wt-path))))
+                  (setq prev-section t)))))
+          ;; Repo worktrees
+          (when repo-root
+            (let ((worktrees (workset-worktree-list repo-root))
+                  (repo-name (workset--repo-name repo-root)))
+              (when worktrees
+                (when prev-section (princ "\n"))
+                (princ (format "Git Worktrees for %s\n" repo-name))
+                (princ (make-string 40 ?─))
+                (princ "\n")
+                (dolist (wt worktrees)
+                  (let* ((path (plist-get wt :path))
+                         (branch (or (plist-get wt :branch) "(detached)"))
+                         (head (plist-get wt :head))
+                         (short-head (if head (substring head 0 (min 8 (length head))) "?")))
+                    (princ (format "%s\n  branch: %s\n  path:   %s\n\n"
+                                   short-head branch path))))))))))))
 
 (defun workset--git-repo-root ()
   "Return the git repository root for `default-directory', or nil."

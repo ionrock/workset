@@ -904,6 +904,18 @@
          (wt-dir (expand-file-name "worktrees/feature" tmpdir)))
     (unwind-protect
         (progn
+;;;; workset-list discovered worktrees tests
+
+(ert-deftest workset-test-list-shows-discovered-worktrees ()
+  "Test that workset-list includes discovered worktrees section."
+  (let* ((tmpdir (make-temp-file "workset-test-list-disc-" t))
+         (repo-dir (expand-file-name "myrepo" tmpdir))
+         (workset--active-worksets nil)
+         (workset-discovery-directories (list tmpdir))
+         (workset-vterm-buffer-name-format "*workset: %r/%t<%n>*"))
+    (unwind-protect
+        (progn
+          ;; Set up a git repo so discovery finds something
           (make-directory repo-dir t)
           (let ((default-directory repo-dir))
             (call-process "git" nil nil nil "init")
@@ -938,6 +950,29 @@
         (progn
           (make-directory dir1 t)
           (make-directory dir2 t)
+          ;; Call workset-list with no git repo in default-directory
+          (let ((default-directory tmpdir))
+            (cl-letf (((symbol-function 'workset--git-repo-root) (lambda () nil)))
+              (workset-list)))
+          ;; Check that the buffer was created with discovered section
+          (with-current-buffer "*workset-list*"
+            (let ((content (buffer-string)))
+              (should (string-match-p "Discovered Worktrees" content))
+              (should (string-match-p "myrepo" content)))))
+      (when (get-buffer "*workset-list*")
+        (kill-buffer "*workset-list*"))
+      (delete-directory tmpdir t))))
+
+(ert-deftest workset-test-list-discovered-section-separator ()
+  "Test that workset-list adds separator between active worksets and discovered."
+  (let* ((tmpdir (make-temp-file "workset-test-list-sep-" t))
+         (repo-dir (expand-file-name "myrepo" tmpdir))
+         (workset--active-worksets nil)
+         (workset-discovery-directories (list tmpdir))
+         (workset-vterm-buffer-name-format "*workset: %r/%t<%n>*"))
+    (unwind-protect
+        (progn
+          ;; Set up a git repo
           (make-directory repo-dir t)
           (let ((default-directory repo-dir))
             (call-process "git" nil nil nil "init")
@@ -997,6 +1032,37 @@
           (workset-worktree-remove repo-dir wt1)
           (workset-worktree-remove repo-dir wt2))
       (delete-directory tmpdir t))))
+          ;; Add an active workset
+          (workset--put "testrepo/task1"
+                        (list :repo-root repo-dir
+                              :worktree-path repo-dir
+                              :branch "task1"
+                              :vterm-buffers nil))
+          ;; Call workset-list
+          (let ((default-directory tmpdir))
+            (cl-letf (((symbol-function 'workset--git-repo-root) (lambda () nil)))
+              (workset-list)))
+          ;; Buffer should have both sections
+          (with-current-buffer "*workset-list*"
+            (let ((content (buffer-string)))
+              (should (string-match-p "Active Worksets" content))
+              (should (string-match-p "Discovered Worktrees" content)))))
+      (workset--remove "testrepo/task1")
+      (when (get-buffer "*workset-list*")
+        (kill-buffer "*workset-list*"))
+      (delete-directory tmpdir t))))
+
+(ert-deftest workset-test-list-no-discovery-dirs-not-in-repo ()
+  "Test that workset-list shows message when no active worksets or repos."
+  (let ((workset--active-worksets nil)
+        (workset-discovery-directories nil)
+        (messages nil))
+    (cl-letf (((symbol-function 'workset--git-repo-root) (lambda () nil))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (workset-list))
+    (should (= 1 (length messages)))
+    (should (string-match-p "No active worksets" (car messages)))))
 
 (provide 'workset-test)
 ;;; workset-test.el ends here
