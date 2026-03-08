@@ -1030,10 +1030,11 @@
       (delete-directory tmpdir t))))
 
 (ert-deftest workset-test-list-discovered-section-separator ()
-  "Test that workset-list shows both active and discovered sections."
+  "Test that workset-list shows active and discovered entries with repo separators."
   (let* ((tmpdir (make-temp-file "workset-test-list-sep-" t))
          (wt-dir (expand-file-name "worktrees" tmpdir))
          (repo-dir (expand-file-name "myrepo" wt-dir))
+         (wt-path (expand-file-name "task-wt" wt-dir))
          (workset--active-worksets nil)
          (workset-superset-directory tmpdir)
          (workset-base-directory "/nonexistent")
@@ -1049,7 +1050,9 @@
               (insert "test\n"))
             (call-process "git" nil nil nil "add" ".")
             (call-process "git" nil nil nil "commit" "-m" "init"))
-          ;; Add an active workset
+          ;; Create a worktree that will be discovered
+          (workset-worktree-create repo-dir wt-path "task-wt")
+          ;; Add an active workset pointing to a different path
           (workset--put "testrepo/task1"
                         (list :repo-root repo-dir
                               :worktree-path repo-dir
@@ -1061,12 +1064,13 @@
           (let ((default-directory tmpdir))
             (cl-letf (((symbol-function 'workset--git-repo-root) (lambda () nil)))
               (workset-list)))
-          ;; Buffer should have both sections
+          ;; Buffer should have both active and discovered entries
           (with-current-buffer "*workset*"
             (let ((content (buffer-string)))
-              (should (string-match-p "Active Worksets" content))
-              (should (string-match-p "Discovered" content)))))
+              (should (string-match-p "active" content))
+              (should (string-match-p "discovered" content)))))
       (workset--remove "testrepo/task1")
+      (ignore-errors (workset-worktree-remove repo-dir wt-path))
       (when (get-buffer "*workset*")
         (kill-buffer "*workset*"))
       (delete-directory tmpdir t))))

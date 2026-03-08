@@ -4,7 +4,7 @@
 
 ;; Author: Eric
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (vterm "0.0.2") (transient "0.4.0") (magit-section "4.0.0"))
+;; Package-Requires: ((emacs "29.1") (vterm "0.0.2") (transient "0.4.0"))
 ;; Keywords: tools, processes, vc
 ;; URL: https://github.com/eric/workset
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -337,7 +337,7 @@ configured discovery directories."
 
 ;;;###autoload
 (defun workset-list ()
-  "Display worksets in an interactive magit-section buffer."
+  "Display worksets in a tabulated list buffer."
   (interactive)
   (workset-list-buffer))
 

@@ -16,7 +16,6 @@
 (depends-on "emacs" "29.1")
 (depends-on "vterm")
 (depends-on "transient")
-(depends-on "magit-section")
 
 (development
  (depends-on "ert-runner"))
