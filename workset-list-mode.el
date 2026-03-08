@@ -1,11 +1,11 @@
-;;; workset-list-mode.el --- Tabulated-list based workset listing  -*- lexical-binding: t; -*-
+;;; workset-list-mode.el --- Tabular workset listing  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Eric
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; Interactive workset listing buffer using tabulated-list-mode for
-;; a sortable, navigable UI with action keybindings.
+;; Interactive workset listing buffer with repo headers and indented
+;; worktree entries.  Repos with no worktrees show as a single line.
 
 ;;; Code:
 
@@ -17,9 +17,19 @@
   "Faces for the workset listing buffer."
   :group 'workset)
 
-(defface workset-list-heading
+(defface workset-list-repo
   '((t :inherit bold))
-  "Face for group headings."
+  "Face for repo name headers."
+  :group 'workset-list)
+
+(defface workset-list-repo-path
+  '((t :inherit shadow))
+  "Face for repo path in header line."
+  :group 'workset-list)
+
+(defface workset-list-border
+  '((t :inherit shadow))
+  "Face for box-drawing border characters."
   :group 'workset-list)
 
 (defface workset-list-key
@@ -42,9 +52,9 @@
   "Face for stale worktree indicators."
   :group 'workset-list)
 
-(defface workset-list-separator
-  '((t :inherit bold :underline t))
-  "Face for separator/group rows."
+(defface workset-list-type
+  '((t :inherit font-lock-comment-face))
+  "Face for entry type labels."
   :group 'workset-list)
 
 ;;;; Forward declarations
@@ -75,8 +85,9 @@
 
 (defun workset-list--gather-entries ()
   "Gather workset entries from all sources, deduplicated by path.
-Returns a list of plists sorted by `:repo-name' with separator
-plists inserted between groups."
+Returns an alist of (REPO-NAME . ENTRIES) sorted by repo name.
+Each entry is a plist with :type, :key, :path, :repo-root,
+:repo-name, :branch, and :status."
   (let ((seen (make-hash-table :test #'equal))
         (entries nil))
     ;; 1. Active worksets
@@ -119,7 +130,7 @@ plists inserted between groups."
                             :repo-root repo-root
                             :repo-name (or repo-name "")
                             :branch (or branch "")
-                            :status "disc")
+                            :status "discovered")
                       entries)))))))
     ;; 3. Git worktrees from current repo
     (let ((repo-root (workset--git-repo-root)))
@@ -145,7 +156,7 @@ plists inserted between groups."
                               :repo-root repo-root
                               :repo-name (or repo-name "")
                               :branch branch
-                              :status "wt")
+                              :status "worktree")
                         entries))))))))
     ;; 4. Projectile projects (when available)
     (when (featurep 'projectile)
@@ -161,65 +172,110 @@ plists inserted between groups."
                           :repo-root path
                           :repo-name (or repo-name "")
                           :branch ""
-                          :status "proj")
+                          :status "project")
                     entries))))))
-    ;; Sort by repo-name (case-insensitive), then insert separators
-    (setq entries (nreverse entries))
-    (setq entries (sort entries
-                        (lambda (a b)
-                          (string-lessp
-                           (downcase (or (plist-get a :repo-name) ""))
-                           (downcase (or (plist-get b :repo-name) ""))))))
-    ;; Insert separator plists between groups
-    (let ((result nil)
-          (last-group nil))
-      (dolist (entry entries)
-        (let ((group (downcase (or (plist-get entry :repo-name) ""))))
-          (unless (equal group last-group)
-            (push (list :type 'separator
-                        :key nil
-                        :path nil
-                        :repo-root nil
-                        :repo-name (plist-get entry :repo-name)
-                        :branch ""
-                        :status "")
-                  result)
-            (setq last-group group)))
-        (push entry result))
-      (nreverse result))))
+    ;; Group by repo-name
+    (let ((groups (make-hash-table :test #'equal)))
+      (dolist (entry (nreverse entries))
+        (let ((repo (or (plist-get entry :repo-name) "")))
+          (puthash repo (append (gethash repo groups) (list entry)) groups)))
+      ;; Sort groups by name, return alist
+      (let ((result nil))
+        (maphash (lambda (k v) (push (cons k v) result)) groups)
+        (sort result (lambda (a b)
+                       (string-lessp (downcase (car a))
+                                     (downcase (car b)))))))))
 
-;;;; Entry formatting
+;;;; Buffer rendering
 
-(defun workset-list--format-entry (entry)
-  "Format ENTRY plist into a tabulated-list entry.
-Returns (ID . [VECTOR]) where ID is the plist."
-  (let ((type (plist-get entry :type)))
-    (if (eq type 'separator)
-        (list entry
-              (vector (propertize (or (plist-get entry :repo-name) "")
-                                  'face 'workset-list-separator)
-                      "" "" "" ""))
-      (let* ((key (or (plist-get entry :key) ""))
-             (branch (or (plist-get entry :branch) ""))
-             (path (or (plist-get entry :path) ""))
-             (status (or (plist-get entry :status) ""))
-             (type-str (symbol-name type))
-             (name-face (if (string= status "stale")
-                            'workset-list-stale
-                          'workset-list-key)))
-        (list entry
-              (vector (propertize key 'face name-face)
-                      type-str
-                      (propertize branch 'face 'workset-list-branch)
-                      status
-                      (propertize (abbreviate-file-name path)
-                                  'face 'workset-list-path)))))))
+(defun workset-list--insert-border (prefix char width)
+  "Insert a border line: PREFIX + WIDTH copies of CHAR."
+  (insert (propertize (concat prefix (make-string width char))
+                      'face 'workset-list-border))
+  (insert "\n"))
+
+(defun workset-list--repo-path (entries)
+  "Get the repo-root path from ENTRIES to display in repo header."
+  (let ((repo-root (cl-some (lambda (e) (plist-get e :repo-root)) entries)))
+    (when repo-root
+      (abbreviate-file-name repo-root))))
+
+(defun workset-list--insert-repo-header (repo-name entries)
+  "Insert a repo header for REPO-NAME with ENTRIES count info."
+  (let* ((repo-path (workset-list--repo-path entries))
+         (count (length entries))
+         (header (concat (propertize repo-name 'face 'workset-list-repo)
+                         (when repo-path
+                           (concat "  "
+                                   (propertize repo-path
+                                               'face 'workset-list-repo-path)))
+                         (propertize (format "  (%d)" count)
+                                    'face 'workset-list-type))))
+    (workset-list--insert-border "┌─" ?─ 78)
+    (insert (propertize "│ " 'face 'workset-list-border) header "\n")
+    (when entries
+      (workset-list--insert-border "├─" ?─ 78))))
+
+(defun workset-list--insert-entry (entry last-p)
+  "Insert a single worktree ENTRY line.  LAST-P non-nil for the last entry."
+  (let* ((key (or (plist-get entry :key) ""))
+         (branch (or (plist-get entry :branch) ""))
+         (path (abbreviate-file-name (or (plist-get entry :path) "")))
+         (status (or (plist-get entry :status) ""))
+         (connector (if last-p "└── " "├── "))
+         (stale-p (string= status "stale"))
+         (name-face (if stale-p 'workset-list-stale 'workset-list-key))
+         ;; Derive a short display name from the key
+         (display-name (file-name-nondirectory (directory-file-name key)))
+         (beg (point)))
+    (insert (propertize "│ " 'face 'workset-list-border)
+            (propertize connector 'face 'workset-list-border)
+            (propertize (workset-list--pad display-name 25) 'face name-face)
+            " "
+            (propertize (workset-list--pad status 12) 'face 'workset-list-type)
+            (propertize (workset-list--pad branch 30) 'face 'workset-list-branch)
+            (propertize path 'face 'workset-list-path)
+            "\n")
+    ;; Store the entry plist as a text property on the line
+    (put-text-property beg (point) 'workset-entry entry)))
+
+(defun workset-list--insert-repo-solo (repo-name entries)
+  "Insert a single-line repo entry for REPO-NAME with no children."
+  (let* ((repo-path (workset-list--repo-path entries))
+         (beg (point)))
+    (insert (propertize "─── " 'face 'workset-list-border)
+            (propertize repo-name 'face 'workset-list-repo)
+            (when repo-path
+              (concat "  "
+                      (propertize repo-path 'face 'workset-list-repo-path)))
+            "\n")
+    ;; Make it actionable if there's a single project entry
+    (when (and entries (= (length entries) 1))
+      (put-text-property beg (point) 'workset-entry (car entries)))))
+
+(defun workset-list--insert-group (repo-name entries)
+  "Insert a group for REPO-NAME with its ENTRIES."
+  (if (null entries)
+      (workset-list--insert-repo-solo repo-name nil)
+    (workset-list--insert-repo-header repo-name entries)
+    (let ((remaining entries))
+      (while remaining
+        (workset-list--insert-entry (car remaining) (null (cdr remaining)))
+        (setq remaining (cdr remaining))))
+    (workset-list--insert-border "└─" ?─ 78)
+    (insert "\n")))
+
+(defun workset-list--pad (str width)
+  "Pad or truncate STR to WIDTH characters."
+  (if (>= (length str) width)
+      (substring str 0 width)
+    (concat str (make-string (- width (length str)) ?\s))))
 
 ;;;; Mode definition
 
 (defvar workset-list-mode-map
   (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map tabulated-list-mode-map)
+    (set-keymap-parent map special-mode-map)
     (define-key map (kbd "g") #'workset-list-refresh)
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "c") #'workset-create)
@@ -229,33 +285,34 @@ Returns (ID . [VECTOR]) where ID is the plist."
     (define-key map (kbd "t") #'workset-list-vterm)
     (define-key map (kbd "r") #'workset-list-remove)
     (define-key map (kbd "d") #'workset-list-dired)
+    (define-key map (kbd "n") #'workset-list-next-entry)
+    (define-key map (kbd "p") #'workset-list-prev-entry)
     map)
   "Keymap for `workset-list-mode'.")
 
-(define-derived-mode workset-list-mode tabulated-list-mode "Workset"
+(define-derived-mode workset-list-mode special-mode "Workset"
   "Major mode for the workset listing buffer."
   :group 'workset
-  (setq tabulated-list-format [("Name" 30 t)
-                                ("Type" 12 t)
-                                ("Branch" 25 t)
-                                ("Status" 8 t)
-                                ("Path" 0 t)])
-  (setq tabulated-list-sort-key nil)
-  (setq tabulated-list-padding 2)
-  (tabulated-list-init-header))
+  (setq buffer-read-only t)
+  (setq truncate-lines t))
 
 ;;;; Refresh and buffer entry point
 
 (defun workset-list-refresh ()
   "Rebuild the workset listing buffer."
   (interactive)
-  (let ((buffer (get-buffer-create "*workset*")))
+  (let ((buffer (get-buffer-create "*workset*"))
+        (pos (point)))
     (with-current-buffer buffer
-      (let ((entries (workset-list--gather-entries)))
-        (setq tabulated-list-entries
-              (mapcar #'workset-list--format-entry entries))
-        (tabulated-list-print t)
-        (goto-char (point-min))))))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (let ((groups (workset-list--gather-entries)))
+          (dolist (group groups)
+            (workset-list--insert-group (car group) (cdr group)))))
+      (goto-char (min pos (point-max)))
+      ;; Move to the first actionable entry
+      (when (= pos 1)
+        (workset-list-next-entry)))))
 
 (defun workset-list-buffer ()
   "Display the workset listing buffer."
@@ -267,13 +324,36 @@ Returns (ID . [VECTOR]) where ID is the plist."
     (workset-list-refresh)
     (pop-to-buffer-same-window buffer)))
 
+;;;; Navigation
+
+(defun workset-list-next-entry ()
+  "Move to the next worktree entry."
+  (interactive)
+  (let ((pos (point)))
+    (forward-line 1)
+    (while (and (not (eobp))
+                (not (get-text-property (point) 'workset-entry)))
+      (forward-line 1))
+    (when (eobp)
+      (goto-char pos))))
+
+(defun workset-list-prev-entry ()
+  "Move to the previous worktree entry."
+  (interactive)
+  (let ((pos (point)))
+    (forward-line -1)
+    (while (and (not (bobp))
+                (not (get-text-property (point) 'workset-entry)))
+      (forward-line -1))
+    (when (bobp)
+      (unless (get-text-property (point) 'workset-entry)
+        (goto-char pos)))))
+
 ;;;; Helper functions
 
 (defun workset-list--entry-at-point ()
-  "Return the plist for the entry at point, or nil if separator."
-  (let ((id (tabulated-list-get-id)))
-    (when (and id (not (eq (plist-get id :type) 'separator)))
-      id)))
+  "Return the entry plist at point, or nil."
+  (get-text-property (point) 'workset-entry))
 
 (defun workset-list--ensure-active (path key repo-root branch)
   "Ensure the worktree at PATH is registered as an active workset.
