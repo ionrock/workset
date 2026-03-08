@@ -12,6 +12,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+
 (defun workset-worktree-create (repo-root worktree-path branch &optional start-point)
   "Create a git worktree at WORKTREE-PATH with BRANCH from REPO-ROOT.
 START-POINT defaults to HEAD.  If BRANCH already exists, checks it out
@@ -124,6 +126,63 @@ Strips leading `origin/', `remotes/origin/' then BRANCH-PREFIX."
                (string-prefix-p branch-prefix name))
       (setq name (substring name (length branch-prefix))))
     name))
+
+(defun workset-worktree--read-branch-from-head (head-file)
+  "Read HEAD-FILE and return branch name, or nil if detached."
+  (when (file-readable-p head-file)
+    (with-temp-buffer
+      (insert-file-contents head-file)
+      (let ((content (string-trim (buffer-string))))
+        (when (string-prefix-p "ref: refs/heads/" content)
+          (substring content (length "ref: refs/heads/")))))))
+
+(defun workset-worktree--resolve-gitdir (dot-git-file)
+  "Read a .git file and return the gitdir path it points to."
+  (when (file-readable-p dot-git-file)
+    (with-temp-buffer
+      (insert-file-contents dot-git-file)
+      (let ((content (string-trim (buffer-string))))
+        (when (string-prefix-p "gitdir: " content)
+          (let ((gitdir (substring content (length "gitdir: "))))
+            ;; Resolve relative paths relative to the .git file's directory
+            (expand-file-name gitdir (file-name-directory dot-git-file))))))))
+
+(defun workset-worktree--repo-root-from-gitdir (gitdir)
+  "Derive the main repo root from a linked worktree's GITDIR path.
+GITDIR is typically /path/to/repo/.git/worktrees/NAME."
+  ;; Go up from .git/worktrees/NAME to .git, then to repo root
+  (let ((git-dir (file-name-directory (directory-file-name
+                   (file-name-directory (directory-file-name gitdir))))))
+    (file-name-directory (directory-file-name git-dir))))
+
+(defun workset-worktree-discover-in-directory (base-dir &optional max-depth)
+  "Discover git worktrees under BASE-DIR up to MAX-DEPTH levels deep.
+Returns a list of plists with :path, :branch, :repo-root, and :type keys.
+TYPE is either `linked' (linked worktree) or `main' (standalone repo)."
+  (let ((depth (or max-depth 4))
+        (result nil)
+        (skip-dirs '(".git" "node_modules" ".cache" "elpa" ".venv" ".tox")))
+    (cl-labels ((walk (dir level)
+      (when (and (file-directory-p dir) (<= level depth))
+        (let ((dot-git (expand-file-name ".git" dir)))
+          (cond
+           ((file-regular-p dot-git)  ;; linked worktree
+            (let* ((gitdir (workset-worktree--resolve-gitdir dot-git))
+                   (repo-root (when gitdir (workset-worktree--repo-root-from-gitdir gitdir)))
+                   (head-file (when gitdir (expand-file-name "HEAD" gitdir)))
+                   (branch (when head-file (workset-worktree--read-branch-from-head head-file))))
+              (push (list :path dir :branch branch :repo-root repo-root :type 'linked) result)))
+           ((file-directory-p dot-git)  ;; main repo
+            (let* ((head-file (expand-file-name "HEAD" dot-git))
+                   (branch (workset-worktree--read-branch-from-head head-file)))
+              (push (list :path dir :branch branch :repo-root dir :type 'main) result)))
+           (t  ;; No .git here, keep walking
+            (dolist (entry (directory-files dir t nil t))
+              (when (and (file-directory-p entry)
+                         (not (member (file-name-nondirectory entry) (append '("." "..") skip-dirs))))
+                (walk entry (1+ level))))))))))
+      (walk (expand-file-name base-dir) 0)
+      (nreverse result))))
 
 (provide 'workset-worktree)
 ;;; workset-worktree.el ends here
