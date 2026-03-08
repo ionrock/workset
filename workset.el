@@ -99,6 +99,11 @@ and %n with the terminal number."
   :type 'string
   :group 'workset)
 
+(defcustom workset-repos nil
+  "List of git repository root paths to track in the workset listing."
+  :type '(repeat directory)
+  :group 'workset)
+
 (defcustom workset-branch-prefix ""
   "Optional prefix for new branch names (e.g. \"eric/\")."
   :type 'string
@@ -244,6 +249,8 @@ Prefers the stored :task, falls back to remainder of KEY after first /."
 (define-key workset-prefix-map (kbd "r") #'workset-remove)
 (define-key workset-prefix-map (kbd "b") #'workset-load)
 (define-key workset-prefix-map (kbd "p") #'workset-load-pr)
+(define-key workset-prefix-map (kbd "a") #'workset-add-repo)
+(define-key workset-prefix-map (kbd "R") #'workset-remove-repo)
 
 ;;;###autoload
 (defun workset-create ()
@@ -340,6 +347,32 @@ configured discovery directories."
   "Display worksets in a tabulated list buffer."
   (interactive)
   (workset-list-buffer))
+
+;;;###autoload
+(defun workset-add-repo ()
+  "Add a git repository to `workset-repos'.
+Prompts for a directory (defaulting to the project root), adds it
+to the list, and persists via `customize-save-variable'."
+  (interactive)
+  (let* ((default (workset-project-select))
+         (repo-root (expand-file-name
+                     (directory-file-name default))))
+    (if (member repo-root workset-repos)
+        (message "Repo %s is already tracked" repo-root)
+      (customize-save-variable 'workset-repos
+                               (append workset-repos (list repo-root)))
+      (message "Added repo %s" repo-root))))
+
+;;;###autoload
+(defun workset-remove-repo ()
+  "Remove a git repository from `workset-repos'."
+  (interactive)
+  (unless workset-repos
+    (user-error "No repos registered"))
+  (let ((repo (completing-read "Remove repo: " workset-repos nil t)))
+    (customize-save-variable 'workset-repos
+                             (delete repo workset-repos))
+    (message "Removed repo %s" repo)))
 
 (defun workset--git-repo-root ()
   "Return the git repository root for `default-directory', or nil."
@@ -551,7 +584,10 @@ Returns an alist of (\"#N: title\" . \"N\")."
   ["Manage"
    ("l" "List worksets"   workset-list)
    ("t" "Open terminal"   workset-vterm)
-   ("r" "Remove workset"  workset-remove)])
+   ("r" "Remove workset"  workset-remove)]
+  ["Repos"
+   ("a" "Add repo"        workset-add-repo)
+   ("R" "Remove repo"     workset-remove-repo)])
 
 (workset--install-keymap-prefix workset-keymap-prefix)
 

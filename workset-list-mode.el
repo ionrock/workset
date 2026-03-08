@@ -79,7 +79,10 @@
 (declare-function workset-create "workset")
 (declare-function workset-load "workset")
 (declare-function workset-load-pr "workset")
-(declare-function projectile-known-projects "projectile")
+(declare-function workset-add-repo "workset")
+(declare-function workset-remove-repo "workset")
+
+(defvar workset-repos)
 
 ;;;; Data gathering
 
@@ -132,9 +135,9 @@ Each entry is a plist with :type, :key, :path, :repo-root,
                             :branch (or branch "")
                             :status "discovered")
                       entries)))))))
-    ;; 3. Git worktrees from current repo
-    (let ((repo-root (workset--git-repo-root)))
-      (when repo-root
+    ;; 3. Worktrees from registered repos
+    (dolist (repo-root workset-repos)
+      (when (file-directory-p repo-root)
         (let ((repo-truename (file-truename repo-root))
               (repo-name (workset--repo-name repo-root)))
           (dolist (wt (workset-worktree-list repo-root))
@@ -158,27 +161,17 @@ Each entry is a plist with :type, :key, :path, :repo-root,
                               :branch branch
                               :status "worktree")
                         entries))))))))
-    ;; 4. Projectile projects (when available)
-    (when (featurep 'projectile)
-      (dolist (proj (projectile-known-projects))
-        (let* ((path (directory-file-name (expand-file-name proj)))
-               (truepath (file-truename path)))
-          (unless (gethash truepath seen)
-            (puthash truepath t seen)
-            (let ((repo-name (file-name-nondirectory path)))
-              (push (list :type 'project
-                          :key repo-name
-                          :path path
-                          :repo-root path
-                          :repo-name (or repo-name "")
-                          :branch ""
-                          :status "project")
-                    entries))))))
     ;; Group by repo-name
     (let ((groups (make-hash-table :test #'equal)))
       (dolist (entry (nreverse entries))
         (let ((repo (or (plist-get entry :repo-name) "")))
           (puthash repo (append (gethash repo groups) (list entry)) groups)))
+      ;; Ensure registered repos appear as headers even with no worktrees
+      (dolist (repo-root workset-repos)
+        (when (file-directory-p repo-root)
+          (let ((repo-name (workset--repo-name repo-root)))
+            (unless (gethash repo-name groups)
+              (puthash repo-name nil groups)))))
       ;; Sort groups by name, return alist
       (let ((result nil))
         (maphash (lambda (k v) (push (cons k v) result)) groups)
@@ -285,6 +278,8 @@ Each entry is a plist with :type, :key, :path, :repo-root,
     (define-key map (kbd "t") #'workset-list-vterm)
     (define-key map (kbd "r") #'workset-list-remove)
     (define-key map (kbd "d") #'workset-list-dired)
+    (define-key map (kbd "a") #'workset-add-repo)
+    (define-key map (kbd "R") #'workset-remove-repo)
     (define-key map (kbd "n") #'workset-list-next-entry)
     (define-key map (kbd "p") #'workset-list-prev-entry)
     map)
@@ -431,32 +426,44 @@ KEY, REPO-ROOT, and BRANCH describe the worktree.  Return the key."
           (workset--put active-key ws))))))
 
 (defun workset-list-remove ()
-  "Remove the workset at point."
+  "Remove the workset at point.
+For active entries, kill vterm buffers and optionally remove the worktree.
+For discovered and git-worktree entries, remove the worktree from disk."
   (interactive)
-  (let ((entry (workset-list--entry-at-point)))
+  (let* ((entry (workset-list--entry-at-point))
+         (type (and entry (plist-get entry :type))))
     (unless entry
       (user-error "No workset entry at point"))
-    (unless (eq (plist-get entry :type) 'active)
-      (user-error "Can only remove active worksets"))
-    (let* ((key (plist-get entry :key))
-           (ws (workset--get key))
-           (wt-path (plist-get ws :worktree-path))
-           (repo-root (plist-get ws :repo-root))
-           (repo-name (workset--ws-repo-name key ws))
-           (task (workset--ws-task key ws)))
-      (unless (yes-or-no-p (format "Remove workset %s? " key))
-        (user-error "Aborted"))
-      ;; Kill vterm buffers
-      (dolist (buf (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
-        (when (buffer-live-p buf)
-          (kill-buffer buf)))
-      ;; Optionally remove worktree
-      (when (and (file-directory-p wt-path)
-                 (yes-or-no-p (format "Also remove worktree at %s? " wt-path)))
-        (workset-worktree-remove repo-root wt-path))
-      (workset--remove key)
-      (message "Removed workset %s" key)
-      (workset-list-refresh))))
+    (pcase type
+      ('active
+       (let* ((key (plist-get entry :key))
+              (ws (workset--get key))
+              (wt-path (plist-get ws :worktree-path))
+              (repo-root (plist-get ws :repo-root))
+              (repo-name (workset--ws-repo-name key ws))
+              (task (workset--ws-task key ws)))
+         (unless (yes-or-no-p (format "Remove workset %s? " key))
+           (user-error "Aborted"))
+         ;; Kill vterm buffers
+         (dolist (buf (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
+           (when (buffer-live-p buf)
+             (kill-buffer buf)))
+         ;; Optionally remove worktree
+         (when (and (file-directory-p wt-path)
+                    (yes-or-no-p (format "Also remove worktree at %s? " wt-path)))
+           (workset-worktree-remove repo-root wt-path))
+         (workset--remove key)
+         (message "Removed workset %s" key)))
+      ((or 'discovered 'git-worktree)
+       (let ((path (plist-get entry :path))
+             (repo-root (plist-get entry :repo-root)))
+         (unless (yes-or-no-p (format "Remove worktree at %s? " path))
+           (user-error "Aborted"))
+         (workset-worktree-remove repo-root path)
+         (message "Removed worktree %s" path)))
+      (_
+       (user-error "Unknown entry type: %s" type)))
+    (workset-list-refresh)))
 
 (defun workset-list-dired ()
   "Open dired at the worktree path of the entry at point."
