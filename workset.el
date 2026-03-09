@@ -460,6 +460,9 @@ worktree's relative path under its base directory."
     ;; Optionally remove worktree
     (when (and (file-directory-p wt-path)
                (yes-or-no-p (format "Also remove worktree at %s? " wt-path)))
+      (let ((config (workset-worktree-read-config repo-root)))
+        (when (plist-get config :teardown)
+          (workset-worktree-run-scripts (plist-get config :teardown) wt-path "teardown")))
       (workset-worktree-remove repo-root wt-path))
     (workset--remove key)
     (message "Removed workset %s" key)))
