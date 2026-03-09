@@ -1123,5 +1123,89 @@
       (when (get-buffer "*workset*")
         (kill-buffer "*workset*")))))
 
+;;;; Config reader tests
+
+(ert-deftest workset-test-read-config-valid ()
+  "Test reading a valid .superset/config.json."
+  (let ((tmp-dir (make-temp-file "workset-test-" t)))
+    (unwind-protect
+        (let ((superset-dir (expand-file-name ".superset" tmp-dir)))
+          (make-directory superset-dir t)
+          (with-temp-file (expand-file-name "config.json" superset-dir)
+            (insert "{\"setup\": [\"echo hello\"], \"teardown\": [\"echo bye\"]}"))
+          (let ((config (workset-worktree-read-config tmp-dir)))
+            (should (equal (plist-get config :setup) '("echo hello")))
+            (should (equal (plist-get config :teardown) '("echo bye")))))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest workset-test-read-config-missing-file ()
+  "Test reading config when .superset/config.json doesn't exist."
+  (let ((tmp-dir (make-temp-file "workset-test-" t)))
+    (unwind-protect
+        (let ((config (workset-worktree-read-config tmp-dir)))
+          (should (null (plist-get config :setup)))
+          (should (null (plist-get config :teardown))))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest workset-test-read-config-empty-arrays ()
+  "Test reading config with empty setup/teardown arrays."
+  (let ((tmp-dir (make-temp-file "workset-test-" t)))
+    (unwind-protect
+        (let ((superset-dir (expand-file-name ".superset" tmp-dir)))
+          (make-directory superset-dir t)
+          (with-temp-file (expand-file-name "config.json" superset-dir)
+            (insert "{\"setup\": [], \"teardown\": []}"))
+          (let ((config (workset-worktree-read-config tmp-dir)))
+            (should (null (plist-get config :setup)))
+            (should (null (plist-get config :teardown)))))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest workset-test-read-config-malformed-json ()
+  "Test reading config with malformed JSON."
+  (let ((tmp-dir (make-temp-file "workset-test-" t)))
+    (unwind-protect
+        (let ((superset-dir (expand-file-name ".superset" tmp-dir)))
+          (make-directory superset-dir t)
+          (with-temp-file (expand-file-name "config.json" superset-dir)
+            (insert "not valid json"))
+          (let ((config (workset-worktree-read-config tmp-dir)))
+            (should (null (plist-get config :setup)))
+            (should (null (plist-get config :teardown)))))
+      (delete-directory tmp-dir t))))
+
+;;;; Script executor tests
+
+(ert-deftest workset-test-run-scripts-basic ()
+  "Test executing a simple command."
+  (let ((tmp-dir (make-temp-file "workset-test-" t)))
+    (unwind-protect
+        (progn
+          (workset-worktree-run-scripts '("touch testfile") tmp-dir "test")
+          (should (file-exists-p (expand-file-name "testfile" tmp-dir))))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest workset-test-run-scripts-multiline ()
+  "Test executing a multi-line command string."
+  (let ((tmp-dir (make-temp-file "workset-test-" t)))
+    (unwind-protect
+        (progn
+          (workset-worktree-run-scripts '("touch file1\ntouch file2") tmp-dir "test")
+          (should (file-exists-p (expand-file-name "file1" tmp-dir)))
+          (should (file-exists-p (expand-file-name "file2" tmp-dir))))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest workset-test-run-scripts-empty ()
+  "Test that empty command list is a no-op."
+  (workset-worktree-run-scripts nil "/tmp" "test")
+  (workset-worktree-run-scripts '() "/tmp" "test"))
+
+(ert-deftest workset-test-run-scripts-failure ()
+  "Test that failing commands produce warnings, not errors."
+  (let ((tmp-dir (make-temp-file "workset-test-" t)))
+    (unwind-protect
+        ;; Should not signal an error
+        (workset-worktree-run-scripts '("false") tmp-dir "test")
+      (delete-directory tmp-dir t))))
+
 (provide 'workset-test)
 ;;; workset-test.el ends here
