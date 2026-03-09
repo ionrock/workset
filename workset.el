@@ -271,6 +271,9 @@ Prefers the stored :task, falls back to remainder of KEY after first /."
           (user-error "Aborted"))
       (workset-worktree-create repo-root wt-path branch workset-start-point))
     (workset-worktree-copy-files repo-root wt-path workset-copy-patterns)
+    (let ((config (workset-worktree-read-config repo-root)))
+      (when (plist-get config :setup)
+        (workset-worktree-run-scripts (plist-get config :setup) wt-path "setup")))
     (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
       (workset--put key
                     (list :repo-root repo-root
@@ -497,6 +500,9 @@ Handles remote-tracking refs by creating a local tracking branch."
             (unless (zerop exit-code)
               (error "Failed to create worktree at %s for branch %s" wt-path branch))))))
     (workset-worktree-copy-files repo-root wt-path workset-copy-patterns)
+    (let ((config (workset-worktree-read-config repo-root)))
+      (when (plist-get config :setup)
+        (workset-worktree-run-scripts (plist-get config :setup) wt-path "setup")))
     (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
       (workset--put key
                     (list :repo-root repo-root
