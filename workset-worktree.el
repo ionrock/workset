@@ -184,5 +184,41 @@ TYPE is either `linked' (linked worktree) or `main' (standalone repo)."
       (walk (expand-file-name base-dir) 0)
       (nreverse result))))
 
+(defun workset-worktree-read-config (repo-root)
+  "Read `.superset/config.json' from REPO-ROOT and return a plist.
+Returns (:setup LIST :teardown LIST) where each value is a list of
+strings, or nil.  If the file is missing or the JSON is malformed,
+returns (:setup nil :teardown nil) without signaling an error."
+  (let ((config-file (expand-file-name ".superset/config.json" repo-root)))
+    (if (not (file-exists-p config-file))
+        (list :setup nil :teardown nil)
+      (condition-case _err
+          (with-temp-buffer
+            (insert-file-contents config-file)
+            (let ((json (json-parse-buffer :object-type 'hash-table
+                                           :array-type 'list)))
+              (list :setup (gethash "setup" json)
+                    :teardown (gethash "teardown" json))))
+        (error
+         (message "workset: failed to parse %s" config-file)
+         (list :setup nil :teardown nil))))))
+
+(defun workset-worktree-run-scripts (commands directory &optional label)
+  "Execute shell COMMANDS in DIRECTORY, logging output to *workset-scripts*.
+COMMANDS is a list of strings; each may contain embedded newlines.
+LABEL is an optional string like \"setup\" or \"teardown\" for log messages.
+On non-zero exit, logs a warning via `message' but does not signal an error."
+  (when commands
+    (let ((default-directory directory)
+          (output-buf (get-buffer-create "*workset-scripts*")))
+      (dolist (cmd commands)
+        (with-current-buffer output-buf
+          (goto-char (point-max))
+          (insert (format "\n--- %s: %s ---\n" (or label "script") cmd)))
+        (let ((exit-code (call-process "/bin/sh" nil output-buf nil "-c" cmd)))
+          (unless (zerop exit-code)
+            (message "workset: %s command exited with %d: %s"
+                     (or label "script") exit-code cmd)))))))
+
 (provide 'workset-worktree)
 ;;; workset-worktree.el ends here
