@@ -238,9 +238,10 @@ Each entry is a plist with :type, :key, :path, :repo-root,
          (beg (point)))
     (insert (propertize "─── " 'face 'workset-list-border)
             (propertize repo-name 'face 'workset-list-repo)
-            (when repo-path
-              (concat "  "
-                      (propertize repo-path 'face 'workset-list-repo-path)))
+            (if repo-path
+                (concat "  "
+                        (propertize repo-path 'face 'workset-list-repo-path))
+              "")
             "\n")
     ;; Make it actionable if there's a single project entry
     (when (and entries (= (length entries) 1))
