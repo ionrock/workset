@@ -100,13 +100,14 @@ Each entry is a plist with :type, :key, :path, :repo-root,
              (repo-root (plist-get ws :repo-root))
              (branch (plist-get ws :branch))
              (repo-name (workset--ws-repo-name key ws))
-             (alive (file-directory-p path))
-             (status (if alive "active" "stale")))
-        (unless (gethash (file-truename path) seen)
-          (puthash (file-truename path) t seen)
+             (alive (and path (file-directory-p path)))
+             (status (if alive "active" "stale"))
+             (true-path (when path (file-truename path))))
+        (unless (and true-path (gethash true-path seen))
+          (when true-path (puthash true-path t seen))
           (push (list :type 'active
                       :key key
-                      :path path
+                      :path (or path "")
                       :repo-root repo-root
                       :repo-name (or repo-name "")
                       :branch (or branch "")
