@@ -168,12 +168,11 @@ Each entry is a plist with :type, :key, :path, :repo-root,
       (dolist (entry (nreverse entries))
         (let ((repo (or (plist-get entry :repo-name) "")))
           (puthash repo (append (gethash repo groups) (list entry)) groups)))
-      ;; Ensure registered repos appear as headers even with no worktrees
+      ;; Ensure registered repos always appear as headers even with no worktrees
       (dolist (repo-root workset-repos)
-        (when (file-directory-p repo-root)
-          (let ((repo-name (workset--repo-name repo-root)))
-            (unless (gethash repo-name groups)
-              (puthash repo-name nil groups)))))
+        (let ((repo-name (workset--repo-name repo-root)))
+          (unless (gethash repo-name groups)
+            (puthash repo-name nil groups))))
       ;; Sort groups by name, return alist
       (let ((result nil))
         (maphash (lambda (k v) (push (cons k v) result)) groups)
@@ -244,11 +243,13 @@ Each entry is a plist with :type, :key, :path, :repo-root,
 
 (defun workset-list--insert-repo-solo (repo-name entries)
   "Insert a single-line repo entry for REPO-NAME with no children."
-  (let* ((repo-path (workset-list--repo-path entries))
-         (repo-root (or (workset-list--repo-root-from-entries entries)
+  (let* ((repo-root (or (workset-list--repo-root-from-entries entries)
                         (cl-find-if (lambda (r)
                                       (string= (workset--repo-name r) repo-name))
                                     workset-repos)))
+         (repo-path (or (workset-list--repo-path entries)
+                        (when repo-root
+                          (abbreviate-file-name repo-root))))
          (beg (point)))
     (insert (propertize "─── " 'face 'workset-list-border)
             (propertize repo-name 'face 'workset-list-repo)
