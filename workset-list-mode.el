@@ -1,4 +1,4 @@
-;;; workset-list-mode.el --- Tabular workset listing  -*- lexical-binding: t; -*-
+;;; Workset-list-mode.el --- Tabular workset listing  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Eric
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'transient)
 
 ;;;; Custom faces
 
@@ -194,9 +195,14 @@ Each entry is a plist with :type, :key, :path, :repo-root,
     (when repo-root
       (abbreviate-file-name repo-root))))
 
+(defun workset-list--repo-root-from-entries (entries)
+  "Get the repo-root path from ENTRIES."
+  (cl-some (lambda (e) (plist-get e :repo-root)) entries))
+
 (defun workset-list--insert-repo-header (repo-name entries)
   "Insert a repo header for REPO-NAME with ENTRIES count info."
   (let* ((repo-path (workset-list--repo-path entries))
+         (repo-root (workset-list--repo-root-from-entries entries))
          (count (length entries))
          (header (concat (propertize repo-name 'face 'workset-list-repo)
                          (when repo-path
@@ -204,9 +210,12 @@ Each entry is a plist with :type, :key, :path, :repo-root,
                                    (propertize repo-path
                                                'face 'workset-list-repo-path)))
                          (propertize (format "  (%d)" count)
-                                    'face 'workset-list-type))))
+                                    'face 'workset-list-type)))
+         (beg (point)))
     (workset-list--insert-border "┌─" ?─ 78)
     (insert (propertize "│ " 'face 'workset-list-border) header "\n")
+    (when repo-root
+      (put-text-property beg (point) 'workset-repo-root repo-root))
     (when entries
       (workset-list--insert-border "├─" ?─ 78))))
 
@@ -236,6 +245,10 @@ Each entry is a plist with :type, :key, :path, :repo-root,
 (defun workset-list--insert-repo-solo (repo-name entries)
   "Insert a single-line repo entry for REPO-NAME with no children."
   (let* ((repo-path (workset-list--repo-path entries))
+         (repo-root (or (workset-list--repo-root-from-entries entries)
+                        (cl-find-if (lambda (r)
+                                      (string= (workset--repo-name r) repo-name))
+                                    workset-repos)))
          (beg (point)))
     (insert (propertize "─── " 'face 'workset-list-border)
             (propertize repo-name 'face 'workset-list-repo)
@@ -246,7 +259,10 @@ Each entry is a plist with :type, :key, :path, :repo-root,
             "\n")
     ;; Make it actionable if there's a single project entry
     (when (and entries (= (length entries) 1))
-      (put-text-property beg (point) 'workset-entry (car entries)))))
+      (put-text-property beg (point) 'workset-entry (car entries)))
+    ;; Always store repo-root for terminal/dired access
+    (when repo-root
+      (put-text-property beg (point) 'workset-repo-root repo-root))))
 
 (defun workset-list--insert-group (repo-name entries)
   "Insert a group for REPO-NAME with its ENTRIES."
@@ -275,7 +291,7 @@ Each entry is a plist with :type, :key, :path, :repo-root,
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "c") #'workset-create)
     (define-key map (kbd "b") #'workset-load)
-    (define-key map (kbd "p") #'workset-load-pr)
+    (define-key map (kbd "P") #'workset-load-pr)
     (define-key map (kbd "RET") #'workset-list-open)
     (define-key map (kbd "t") #'workset-list-vterm)
     (define-key map (kbd "r") #'workset-list-remove)
@@ -284,6 +300,7 @@ Each entry is a plist with :type, :key, :path, :repo-root,
     (define-key map (kbd "R") #'workset-remove-repo)
     (define-key map (kbd "n") #'workset-list-next-entry)
     (define-key map (kbd "p") #'workset-list-prev-entry)
+    (define-key map "?" #'workset-list-dispatch)
     map)
   "Keymap for `workset-list-mode'.")
 
@@ -323,13 +340,18 @@ Each entry is a plist with :type, :key, :path, :repo-root,
 
 ;;;; Navigation
 
+(defun workset-list--actionable-line-p ()
+  "Return non-nil if the current line is actionable."
+  (or (get-text-property (point) 'workset-entry)
+      (get-text-property (point) 'workset-repo-root)))
+
 (defun workset-list-next-entry ()
   "Move to the next worktree entry."
   (interactive)
   (let ((pos (point)))
     (forward-line 1)
     (while (and (not (eobp))
-                (not (get-text-property (point) 'workset-entry)))
+                (not (workset-list--actionable-line-p)))
       (forward-line 1))
     (when (eobp)
       (goto-char pos))))
@@ -340,10 +362,10 @@ Each entry is a plist with :type, :key, :path, :repo-root,
   (let ((pos (point)))
     (forward-line -1)
     (while (and (not (bobp))
-                (not (get-text-property (point) 'workset-entry)))
+                (not (workset-list--actionable-line-p)))
       (forward-line -1))
     (when (bobp)
-      (unless (get-text-property (point) 'workset-entry)
+      (unless (workset-list--actionable-line-p)
         (goto-char pos)))))
 
 ;;;; Helper functions
@@ -351,6 +373,10 @@ Each entry is a plist with :type, :key, :path, :repo-root,
 (defun workset-list--entry-at-point ()
   "Return the entry plist at point, or nil."
   (get-text-property (point) 'workset-entry))
+
+(defun workset-list--repo-root-at-point ()
+  "Return the repo-root path at point, or nil."
+  (get-text-property (point) 'workset-repo-root))
 
 (defun workset-list--ensure-active (path key repo-root branch)
   "Ensure the worktree at PATH is registered as an active workset.
@@ -373,59 +399,81 @@ KEY, REPO-ROOT, and BRANCH describe the worktree.  Return the key."
 ;;;; Action commands
 
 (defun workset-list-open ()
-  "Open the workset at point: switch to its vterm."
+  "Open the workset or repo at point: switch to its vterm."
   (interactive)
-  (let ((entry (workset-list--entry-at-point)))
-    (unless entry
-      (user-error "No workset entry at point"))
-    (let* ((path (plist-get entry :path))
-           (type (plist-get entry :type)))
-      (unless path
-        (user-error "Cannot determine worktree path"))
-      (unless (file-directory-p path)
-        (user-error "Worktree %s no longer exists" path))
-      (let* ((key (plist-get entry :key))
-             (repo-root (plist-get entry :repo-root))
-             (branch (plist-get entry :branch))
-             (active-key (if (eq type 'active)
-                             key
-                           (workset-list--ensure-active path key repo-root branch)))
-             (ws (workset--get active-key))
-             (repo-name (workset--ws-repo-name active-key ws))
-             (task (workset--ws-task active-key ws))
+  (let ((entry (workset-list--entry-at-point))
+        (repo-root (workset-list--repo-root-at-point)))
+    (cond
+     (entry
+      (let* ((path (plist-get entry :path))
+             (type (plist-get entry :type)))
+        (unless path
+          (user-error "Cannot determine worktree path"))
+        (unless (file-directory-p path)
+          (user-error "Worktree %s no longer exists" path))
+        (let* ((key (plist-get entry :key))
+               (repo-root (plist-get entry :repo-root))
+               (branch (plist-get entry :branch))
+               (active-key (if (eq type 'active)
+                               key
+                             (workset-list--ensure-active path key repo-root branch)))
+               (ws (workset--get active-key))
+               (repo-name (workset--ws-repo-name active-key ws))
+               (task (workset--ws-task active-key ws))
+               (live-bufs (workset-vterm-list
+                           workset-vterm-buffer-name-format repo-name task)))
+          (if live-bufs
+              (pop-to-buffer-same-window (car live-bufs))
+            (let ((buf (workset-vterm-create path workset-vterm-buffer-name-format repo-name task)))
+              (setq ws (plist-put ws :vterm-buffers (list buf)))
+              (workset--put active-key ws))))))
+     (repo-root
+      (unless (file-directory-p repo-root)
+        (user-error "Repo %s no longer exists" repo-root))
+      (let* ((repo-name (workset--repo-name repo-root))
              (live-bufs (workset-vterm-list
-                         workset-vterm-buffer-name-format repo-name task)))
+                         workset-vterm-buffer-name-format repo-name "main")))
         (if live-bufs
             (pop-to-buffer-same-window (car live-bufs))
-          (let ((buf (workset-vterm-create path workset-vterm-buffer-name-format repo-name task)))
-            (setq ws (plist-put ws :vterm-buffers (list buf)))
-            (workset--put active-key ws)))))))
+          (let ((buf (workset-vterm-create repo-root workset-vterm-buffer-name-format repo-name "main")))
+            (pop-to-buffer-same-window buf)))))
+     (t
+      (user-error "No workset entry or repo at point")))))
 
 (defun workset-list-vterm ()
-  "Open an additional terminal for the workset at point."
+  "Open a terminal for the workset or repo at point."
   (interactive)
-  (let ((entry (workset-list--entry-at-point)))
-    (unless entry
-      (user-error "No workset entry at point"))
-    (let* ((path (plist-get entry :path))
-           (type (plist-get entry :type)))
-      (unless path
-        (user-error "Cannot determine worktree path"))
-      (unless (file-directory-p path)
-        (user-error "Worktree %s no longer exists" path))
-      (let* ((key (plist-get entry :key))
-             (repo-root (plist-get entry :repo-root))
-             (branch (plist-get entry :branch))
-             (active-key (if (eq type 'active)
-                             key
-                           (workset-list--ensure-active path key repo-root branch)))
-             (ws (workset--get active-key))
-             (repo-name (workset--ws-repo-name active-key ws))
-             (task (workset--ws-task active-key ws)))
-        (let* ((buf (workset-vterm-create path workset-vterm-buffer-name-format repo-name task))
-               (bufs (append (plist-get ws :vterm-buffers) (list buf))))
-          (setq ws (plist-put ws :vterm-buffers bufs))
-          (workset--put active-key ws))))))
+  (let ((entry (workset-list--entry-at-point))
+        (repo-root (workset-list--repo-root-at-point)))
+    (cond
+     (entry
+      (let* ((path (plist-get entry :path))
+             (type (plist-get entry :type)))
+        (unless path
+          (user-error "Cannot determine worktree path"))
+        (unless (file-directory-p path)
+          (user-error "Worktree %s no longer exists" path))
+        (let* ((key (plist-get entry :key))
+               (repo-root (plist-get entry :repo-root))
+               (branch (plist-get entry :branch))
+               (active-key (if (eq type 'active)
+                               key
+                             (workset-list--ensure-active path key repo-root branch)))
+               (ws (workset--get active-key))
+               (repo-name (workset--ws-repo-name active-key ws))
+               (task (workset--ws-task active-key ws)))
+          (let* ((buf (workset-vterm-create path workset-vterm-buffer-name-format repo-name task))
+                 (bufs (append (plist-get ws :vterm-buffers) (list buf))))
+            (setq ws (plist-put ws :vterm-buffers bufs))
+            (workset--put active-key ws)))))
+     (repo-root
+      (unless (file-directory-p repo-root)
+        (user-error "Repo %s no longer exists" repo-root))
+      (let* ((repo-name (workset--repo-name repo-root))
+             (buf (workset-vterm-create repo-root workset-vterm-buffer-name-format repo-name "main")))
+        (pop-to-buffer-same-window buf)))
+     (t
+      (user-error "No workset entry or repo at point")))))
 
 (defun workset-list-remove ()
   "Remove the workset at point.
@@ -468,17 +516,47 @@ For discovered and git-worktree entries, remove the worktree from disk."
     (workset-list-refresh)))
 
 (defun workset-list-dired ()
-  "Open dired at the worktree path of the entry at point."
+  "Open dired at the worktree path or repo root at point."
   (interactive)
-  (let ((entry (workset-list--entry-at-point)))
-    (unless entry
-      (user-error "No workset entry at point"))
-    (let ((path (plist-get entry :path)))
-      (unless path
-        (user-error "No path at point"))
-      (unless (file-directory-p path)
-        (user-error "Worktree %s no longer exists" path))
-      (dired path))))
+  (let ((entry (workset-list--entry-at-point))
+        (repo-root (workset-list--repo-root-at-point)))
+    (cond
+     (entry
+      (let ((path (plist-get entry :path)))
+        (unless path
+          (user-error "No path at point"))
+        (unless (file-directory-p path)
+          (user-error "Worktree %s no longer exists" path))
+        (dired path)))
+     (repo-root
+      (unless (file-directory-p repo-root)
+        (user-error "Repo %s no longer exists" repo-root))
+      (dired repo-root))
+     (t
+      (user-error "No workset entry or repo at point")))))
+
+;;;; Transient help menu
+
+(transient-define-prefix workset-list-dispatch ()
+  "Actions for the workset listing buffer."
+  ["Navigation"
+   ("n" "Next entry"        workset-list-next-entry :transient t)
+   ("p" "Previous entry"    workset-list-prev-entry :transient t)]
+  ["Open"
+   ("RET" "Open workset/repo"  workset-list-open)
+   ("t"   "Open terminal"      workset-list-vterm)
+   ("d"   "Dired"              workset-list-dired)]
+  ["Create"
+   ("c" "Create workset"    workset-create)
+   ("b" "Load branch"       workset-load)
+   ("P" "Load pull request" workset-load-pr)]
+  ["Manage"
+   ("r" "Remove"            workset-list-remove)
+   ("a" "Add repo"          workset-add-repo)
+   ("R" "Remove repo"       workset-remove-repo)]
+  ["Buffer"
+   ("g" "Refresh"           workset-list-refresh :transient t)
+   ("q" "Quit"              quit-window)])
 
 (provide 'workset-list-mode)
 ;;; workset-list-mode.el ends here
