@@ -478,12 +478,13 @@ KEY, REPO-ROOT, and BRANCH describe the worktree.  Return the key."
 (defun workset-list-remove ()
   "Remove the workset at point.
 For active entries, kill vterm buffers and optionally remove the worktree.
-For discovered and git-worktree entries, remove the worktree from disk."
+For discovered and git-worktree entries, remove the worktree from disk.
+Use `workset-remove-repo' (R) to unregister a repo."
   (interactive)
   (let* ((entry (workset-list--entry-at-point))
          (type (and entry (plist-get entry :type))))
     (unless entry
-      (user-error "No workset entry at point"))
+      (user-error "No worktree entry at point (use R to remove a repo)"))
     (pcase type
       ('active
        (let* ((key (plist-get entry :key))
