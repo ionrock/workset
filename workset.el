@@ -84,14 +84,6 @@ SUPERSET/worktrees/[ORG/]OWNER/TASK.  Example: \"eric-larson\"."
                  (const :tag "Projectile" projectile))
   :group 'workset)
 
-(defcustom workset-copy-patterns
-  '(".env" ".envrc" ".env.local"
-    "docker-compose.yml" "docker-compose.yaml"
-    ".tool-versions" ".node-version" ".python-version" ".ruby-version")
-  "Files or glob patterns to copy from the source repo into new worktrees."
-  :type '(repeat string)
-  :group 'workset)
-
 (defcustom workset-vterm-buffer-name-format "*workset: %r/%t<%n>*"
   "Format string for vterm buffer names.
 %r is replaced with the repo name, %t with the task name,
@@ -106,11 +98,6 @@ and %n with the terminal number."
 
 (defcustom workset-branch-prefix ""
   "Optional prefix for new branch names (e.g. \"eric/\")."
-  :type 'string
-  :group 'workset)
-
-(defcustom workset-start-point "HEAD"
-  "Start point for new worktree branches."
   :type 'string
   :group 'workset)
 
@@ -440,6 +427,7 @@ worktree's relative path under its base directory."
          (ws (workset--get key))
          (wt-path (plist-get ws :worktree-path))
          (repo-root (plist-get ws :repo-root))
+         (branch (plist-get ws :branch))
          (repo-name (workset--ws-repo-name key ws))
          (task (workset--ws-task key ws)))
     ;; Kill vterm buffers
@@ -455,6 +443,29 @@ worktree's relative path under its base directory."
     (message "Removed workset %s" key)))
 
 ;;;; Private helpers for loading branches
+
+(defun workset-worktree-switch (repo-root branch)
+  "Switch to an existing BRANCH worktree in REPO-ROOT using wt.
+Runs `wt switch BRANCH --no-cd -y' and resolves the worktree path
+via `wt list --format=json'.  Returns the worktree path string."
+  (let ((default-directory repo-root))
+    (let ((exit-code (call-process "wt" nil nil nil
+                                   "switch" branch "--no-cd" "-y")))
+      (unless (zerop exit-code)
+        (error "Wt switch failed for branch %s in %s" branch repo-root)))
+    (with-temp-buffer
+      (let ((exit-code (call-process "wt" nil t nil "list" "--format=json")))
+        (unless (zerop exit-code)
+          (error "Wt list failed in %s" repo-root))
+        (goto-char (point-min))
+        (let* ((entries (json-parse-buffer :object-type 'hash-table
+                                           :array-type 'list))
+               (match (cl-find-if (lambda (entry)
+                                    (equal (gethash "branch" entry) branch))
+                                  entries)))
+          (unless match
+            (error "Could not find worktree for branch %s in wt list output" branch))
+          (gethash "path" match))))))
 
 (defun workset--load-branch (repo-root branch task)
   "Load BRANCH into a workset for REPO-ROOT with task name TASK.
