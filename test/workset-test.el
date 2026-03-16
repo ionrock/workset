@@ -608,14 +608,6 @@
 
 ;;;; Worktree helper tests
 
-(ert-deftest workset-test-glob-pattern-p ()
-  "Test glob pattern detection."
-  (should (workset-worktree--glob-pattern-p "*.env"))
-  (should (workset-worktree--glob-pattern-p "file[0-9]"))
-  (should (workset-worktree--glob-pattern-p "dir/?.txt"))
-  (should-not (workset-worktree--glob-pattern-p ".env"))
-  (should-not (workset-worktree--glob-pattern-p "docker-compose.yml")))
-
 (ert-deftest workset-test-parse-porcelain ()
   "Test parsing git worktree list --porcelain output."
   (let ((output "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /home/user/repo-wt\nHEAD def456\nbranch refs/heads/feature\n"))
@@ -629,94 +621,62 @@
 
 ;;;; Integration tests — require temp git repo
 
-(ert-deftest workset-test-worktree-create-remove ()
-  "Integration test: create and remove a worktree."
+(ert-deftest workset-test-worktree-create ()
+  "Unit test: workset-worktree-create stubs wt CLI calls."
   (let* ((tmpdir (make-temp-file "workset-test-" t))
          (repo-dir (expand-file-name "repo" tmpdir))
-         (wt-dir (expand-file-name "worktree" tmpdir)))
+         (wt-dir (expand-file-name "worktree" tmpdir))
+         (json-output (format "[{\"path\":\"%s\",\"branch\":\"test-branch\",\"head\":\"abc123\"}]"
+                              wt-dir)))
     (unwind-protect
-        (progn
-          ;; Set up a git repo with an initial commit
-          (make-directory repo-dir t)
-          (let ((default-directory repo-dir))
-            (call-process "git" nil nil nil "init")
-            (call-process "git" nil nil nil "config" "user.email" "test@test.com")
-            (call-process "git" nil nil nil "config" "user.name" "Test")
-            (with-temp-file (expand-file-name "README" repo-dir)
-              (insert "test\n"))
-            (call-process "git" nil nil nil "add" ".")
-            (call-process "git" nil nil nil "commit" "-m" "init"))
-          ;; Create worktree
-          (workset-worktree-create repo-dir wt-dir "test-branch")
-          (should (file-directory-p wt-dir))
-          (should (file-exists-p (expand-file-name "README" wt-dir)))
-          ;; Remove worktree
-          ;; Use cl-letf to stub yes-or-no-p in case of force prompt
-          (workset-worktree-remove repo-dir wt-dir)
-          (should-not (file-directory-p wt-dir)))
+        (cl-letf (((symbol-function 'call-process)
+                   (lambda (program _infile buffer _display &rest args)
+                     (cond
+                      ((and (equal program "wt")
+                            (equal (car args) "switch"))
+                       0)
+                      ((and (equal program "wt")
+                            (equal (car args) "list"))
+                       (when buffer
+                         (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                           (insert json-output)))
+                       0)
+                      (t 0)))))
+          (let ((result (workset-worktree-create repo-dir "test-branch")))
+            (should (equal result wt-dir))))
       (delete-directory tmpdir t))))
 
-(ert-deftest workset-test-worktree-copy-files ()
-  "Integration test: copy files matching patterns."
-  (let* ((tmpdir (make-temp-file "workset-test-copy-" t))
-         (source (expand-file-name "source" tmpdir))
-         (target (expand-file-name "target" tmpdir)))
-    (unwind-protect
-        (progn
-          (make-directory source t)
-          (make-directory target t)
-          ;; Create source files
-          (with-temp-file (expand-file-name ".env" source)
-            (insert "SECRET=foo\n"))
-          (with-temp-file (expand-file-name ".envrc" source)
-            (insert "use nix\n"))
-          (with-temp-file (expand-file-name "unrelated.txt" source)
-            (insert "nope\n"))
-          ;; Copy with patterns
-          (workset-worktree-copy-files source target '(".env" ".envrc" ".missing"))
-          ;; .env and .envrc should be copied
-          (should (file-exists-p (expand-file-name ".env" target)))
-          (should (file-exists-p (expand-file-name ".envrc" target)))
-          ;; unrelated.txt should not
-          (should-not (file-exists-p (expand-file-name "unrelated.txt" target)))
-          ;; Already-existing files should not be overwritten
-          (with-temp-file (expand-file-name ".env" target)
-            (insert "ORIGINAL\n"))
-          (workset-worktree-copy-files source target '(".env"))
-          (with-temp-buffer
-            (insert-file-contents (expand-file-name ".env" target))
-            (should (equal (buffer-string) "ORIGINAL\n"))))
-      (delete-directory tmpdir t))))
+(ert-deftest workset-test-worktree-remove ()
+  "Unit test: workset-worktree-remove calls wt remove with branch name."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (program _infile _buffer _display &rest args)
+                 (push (cons program args) calls)
+                 0)))
+      (workset-worktree-remove "/fake/repo" "test-branch")
+      (should (= (length calls) 1))
+      (let ((call (car calls)))
+        (should (equal (car call) "wt"))
+        (should (member "remove" (cdr call)))
+        (should (member "test-branch" (cdr call)))))))
 
 (ert-deftest workset-test-worktree-list ()
-  "Integration test: list worktrees."
-  (let* ((tmpdir (make-temp-file "workset-test-list-" t))
-         (repo-dir (expand-file-name "repo" tmpdir))
-         (wt-dir (expand-file-name "worktree" tmpdir)))
-    (unwind-protect
-        (progn
-          (make-directory repo-dir t)
-          (let ((default-directory repo-dir))
-            (call-process "git" nil nil nil "init")
-            (call-process "git" nil nil nil "config" "user.email" "test@test.com")
-            (call-process "git" nil nil nil "config" "user.name" "Test")
-            (with-temp-file (expand-file-name "README" repo-dir)
-              (insert "test\n"))
-            (call-process "git" nil nil nil "add" ".")
-            (call-process "git" nil nil nil "commit" "-m" "init"))
-          ;; Create a worktree
-          (workset-worktree-create repo-dir wt-dir "list-test-branch")
-          ;; List should contain both the main repo and the worktree
-          (let ((trees (workset-worktree-list repo-dir)))
-            (should (>= (length trees) 2))
-            (let ((wt-true (file-truename wt-dir)))
-              (should (cl-some (lambda (wt)
-                                 (equal (file-truename (plist-get wt :path))
-                                        wt-true))
-                               trees))))
-          ;; Clean up worktree
-          (workset-worktree-remove repo-dir wt-dir))
-      (delete-directory tmpdir t))))
+  "Unit test: workset-worktree-list parses wt list JSON output."
+  (let ((json-output "[{\"path\":\"/home/user/repo\",\"branch\":\"refs/heads/main\",\"head\":\"abc123\"},{\"path\":\"/home/user/repo-wt\",\"branch\":\"refs/heads/feature\",\"head\":\"def456\"}]"))
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (_program _infile buffer _display &rest _args)
+                 (when buffer
+                   (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                     (insert json-output)))
+                 0)))
+      (let ((result (workset-worktree-list "/fake/repo")))
+        (should (= (length result) 2))
+        (should (equal (plist-get (car result) :path) "/home/user/repo"))
+        (should (equal (plist-get (car result) :head) "abc123"))
+        ;; Branch should have refs/heads/ stripped
+        (should (equal (plist-get (car result) :branch) "main"))
+        (should (equal (plist-get (cadr result) :path) "/home/user/repo-wt"))
+        (should (equal (plist-get (cadr result) :branch) "feature"))))))
 
 ;;;; Branch helper tests
 
@@ -861,8 +821,10 @@
               (insert "test\n"))
             (call-process "git" nil nil nil "add" ".")
             (call-process "git" nil nil nil "commit" "-m" "init"))
-          ;; Create a linked worktree
-          (workset-worktree-create repo-dir wt-dir "feature-branch")
+          ;; Create a linked worktree directly via git (not via wt CLI)
+          (make-directory (file-name-directory wt-dir) t)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "add" "-b" "feature-branch" wt-dir "HEAD"))
           ;; Discover in a sub-directory containing the worktree only
           (let* ((wt-parent (expand-file-name "worktrees" tmpdir))
                  (result (workset-worktree-discover-in-directory wt-parent)))
@@ -871,8 +833,9 @@
               (should linked)
               (should (equal (plist-get linked :branch) "feature-branch"))
               (should (plist-get linked :repo-root))))
-          ;; Clean up
-          (workset-worktree-remove repo-dir wt-dir))
+          ;; Clean up directly via git
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "remove" "--force" wt-dir)))
       (delete-directory tmpdir t))))
 
 (ert-deftest workset-test-discover-skips-excluded-dirs ()
@@ -940,9 +903,11 @@
               (insert "test\n"))
             (call-process "git" nil nil nil "add" ".")
             (call-process "git" nil nil nil "commit" "-m" "init"))
-          (workset-worktree-create repo-dir wt-dir "feature-branch")
-          (let* ((wt-parent (expand-file-name "worktrees" tmpdir))
-                 (workset-superset-directory tmpdir)
+          ;; Create worktree directly via git
+          (make-directory (file-name-directory wt-dir) t)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "add" "-b" "feature-branch" wt-dir "HEAD"))
+          (let* ((workset-superset-directory tmpdir)
                  (workset-base-directory tmpdir)
                  (result (workset--discover-all-worktrees)))
             (should (>= (length result) 1))
@@ -950,7 +915,9 @@
                                     (equal (plist-get (cdr entry) :branch) "feature-branch"))
                                   result)))
               (should found)))
-          (workset-worktree-remove repo-dir wt-dir))
+          ;; Clean up directly via git
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "remove" "--force" wt-dir)))
       (delete-directory tmpdir t))))
 
 ;;;; workset-list discovered worktrees tests
@@ -1008,8 +975,9 @@
             (call-process "git" nil nil nil "add" ".")
             (call-process "git" nil nil nil "commit" "-m" "init"))
           ;; Create worktrees in both dirs with the same relative path (same key)
-          (workset-worktree-create repo-dir wt1 "branch-in-dir1")
-          (workset-worktree-create repo-dir wt2 "branch-in-dir2")
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "add" "-b" "branch-in-dir1" wt1 "HEAD")
+            (call-process "git" nil nil nil "worktree" "add" "-b" "branch-in-dir2" wt2 "HEAD"))
           (let* ((workset-superset-directory (expand-file-name "fake-superset" tmpdir))
                  (workset-base-directory (expand-file-name "fake-workset" tmpdir))
                  ;; Override discovery to use our test dirs
@@ -1025,8 +993,9 @@
               (should (= (length feature-entries) 1))
               (should (equal (plist-get (cdr (car feature-entries)) :branch)
                              "branch-in-dir1"))))
-          (workset-worktree-remove repo-dir wt1)
-          (workset-worktree-remove repo-dir wt2))
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "remove" "--force" wt1)
+            (call-process "git" nil nil nil "worktree" "remove" "--force" wt2)))
       (delete-directory tmpdir t))))
 
 (ert-deftest workset-test-list-discovered-section-separator ()
@@ -1050,8 +1019,9 @@
               (insert "test\n"))
             (call-process "git" nil nil nil "add" ".")
             (call-process "git" nil nil nil "commit" "-m" "init"))
-          ;; Create a worktree that will be discovered
-          (workset-worktree-create repo-dir wt-path "task-wt")
+          ;; Create a worktree directly via git (not wt CLI)
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "add" "-b" "task-wt" wt-path "HEAD"))
           ;; Add an active workset pointing to a different path
           (workset--put "testrepo/task1"
                         (list :repo-root repo-dir
@@ -1070,7 +1040,9 @@
               (should (string-match-p "active" content))
               (should (string-match-p "discovered" content)))))
       (workset--remove "testrepo/task1")
-      (ignore-errors (workset-worktree-remove repo-dir wt-path))
+      (ignore-errors
+       (let ((default-directory repo-dir))
+         (call-process "git" nil nil nil "worktree" "remove" "--force" wt-path)))
       (when (get-buffer "*workset*")
         (kill-buffer "*workset*"))
       (delete-directory tmpdir t))))
@@ -1096,8 +1068,9 @@
               (insert "test\n"))
             (call-process "git" nil nil nil "add" ".")
             (call-process "git" nil nil nil "commit" "-m" "init"))
-          (workset-worktree-create repo-dir wt1 "branch-a")
-          (workset-worktree-create repo-dir wt2 "branch-b")
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "add" "-b" "branch-a" wt1 "HEAD")
+            (call-process "git" nil nil nil "worktree" "add" "-b" "branch-b" wt2 "HEAD"))
           (let ((result nil))
             (cl-letf (((symbol-function 'workset--discovery-directories)
                        (lambda () (list dir1 dir2))))
@@ -1106,8 +1079,9 @@
             (let ((keys (mapcar #'car result)))
               (should (member "task-a" keys))
               (should (member "task-b" keys))))
-          (workset-worktree-remove repo-dir wt1)
-          (workset-worktree-remove repo-dir wt2))
+          (let ((default-directory repo-dir))
+            (call-process "git" nil nil nil "worktree" "remove" "--force" wt1)
+            (call-process "git" nil nil nil "worktree" "remove" "--force" wt2)))
       (delete-directory tmpdir t))))
 
 (ert-deftest workset-test-list-no-discovery-dirs-not-in-repo ()
@@ -1123,89 +1097,19 @@
       (when (get-buffer "*workset*")
         (kill-buffer "*workset*")))))
 
-;;;; Config reader tests
-
-(ert-deftest workset-test-read-config-valid ()
-  "Test reading a valid .superset/config.json."
-  (let ((tmp-dir (make-temp-file "workset-test-" t)))
-    (unwind-protect
-        (let ((superset-dir (expand-file-name ".superset" tmp-dir)))
-          (make-directory superset-dir t)
-          (with-temp-file (expand-file-name "config.json" superset-dir)
-            (insert "{\"setup\": [\"echo hello\"], \"teardown\": [\"echo bye\"]}"))
-          (let ((config (workset-worktree-read-config tmp-dir)))
-            (should (equal (plist-get config :setup) '("echo hello")))
-            (should (equal (plist-get config :teardown) '("echo bye")))))
-      (delete-directory tmp-dir t))))
-
-(ert-deftest workset-test-read-config-missing-file ()
-  "Test reading config when .superset/config.json doesn't exist."
-  (let ((tmp-dir (make-temp-file "workset-test-" t)))
-    (unwind-protect
-        (let ((config (workset-worktree-read-config tmp-dir)))
-          (should (null (plist-get config :setup)))
-          (should (null (plist-get config :teardown))))
-      (delete-directory tmp-dir t))))
-
-(ert-deftest workset-test-read-config-empty-arrays ()
-  "Test reading config with empty setup/teardown arrays."
-  (let ((tmp-dir (make-temp-file "workset-test-" t)))
-    (unwind-protect
-        (let ((superset-dir (expand-file-name ".superset" tmp-dir)))
-          (make-directory superset-dir t)
-          (with-temp-file (expand-file-name "config.json" superset-dir)
-            (insert "{\"setup\": [], \"teardown\": []}"))
-          (let ((config (workset-worktree-read-config tmp-dir)))
-            (should (null (plist-get config :setup)))
-            (should (null (plist-get config :teardown)))))
-      (delete-directory tmp-dir t))))
-
-(ert-deftest workset-test-read-config-malformed-json ()
-  "Test reading config with malformed JSON."
-  (let ((tmp-dir (make-temp-file "workset-test-" t)))
-    (unwind-protect
-        (let ((superset-dir (expand-file-name ".superset" tmp-dir)))
-          (make-directory superset-dir t)
-          (with-temp-file (expand-file-name "config.json" superset-dir)
-            (insert "not valid json"))
-          (let ((config (workset-worktree-read-config tmp-dir)))
-            (should (null (plist-get config :setup)))
-            (should (null (plist-get config :teardown)))))
-      (delete-directory tmp-dir t))))
-
-;;;; Script executor tests
-
-(ert-deftest workset-test-run-scripts-basic ()
-  "Test executing a simple command."
-  (let ((tmp-dir (make-temp-file "workset-test-" t)))
-    (unwind-protect
-        (progn
-          (workset-worktree-run-scripts '("touch testfile") tmp-dir "test")
-          (should (file-exists-p (expand-file-name "testfile" tmp-dir))))
-      (delete-directory tmp-dir t))))
-
-(ert-deftest workset-test-run-scripts-multiline ()
-  "Test executing a multi-line command string."
-  (let ((tmp-dir (make-temp-file "workset-test-" t)))
-    (unwind-protect
-        (progn
-          (workset-worktree-run-scripts '("touch file1\ntouch file2") tmp-dir "test")
-          (should (file-exists-p (expand-file-name "file1" tmp-dir)))
-          (should (file-exists-p (expand-file-name "file2" tmp-dir))))
-      (delete-directory tmp-dir t))))
-
-(ert-deftest workset-test-run-scripts-empty ()
-  "Test that empty command list is a no-op."
-  (workset-worktree-run-scripts nil "/tmp" "test")
-  (workset-worktree-run-scripts '() "/tmp" "test"))
-
-(ert-deftest workset-test-run-scripts-failure ()
-  "Test that failing commands produce warnings, not errors."
-  (let ((tmp-dir (make-temp-file "workset-test-" t)))
-    (unwind-protect
-        ;; Should not signal an error
-        (workset-worktree-run-scripts '("false") tmp-dir "test")
-      (delete-directory tmp-dir t))))
+(ert-deftest workset-test-worktree-list-bare-branch ()
+  "Unit test: workset-worktree-list returns bare branch names without refs/heads/."
+  (let ((json-output "[{\"path\":\"/repo\",\"branch\":\"main\",\"head\":\"abc\"}]"))
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (_program _infile buffer _display &rest _args)
+                 (when buffer
+                   (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                     (insert json-output)))
+                 0)))
+      (let ((result (workset-worktree-list "/repo")))
+        (should (= (length result) 1))
+        ;; Branch returned as-is when already bare
+        (should (equal (plist-get (car result) :branch) "main"))))))
 
 (provide 'workset-test)
 ;;; workset-test.el ends here

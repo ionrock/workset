@@ -7,54 +7,70 @@
 
 ;;; Commentary:
 
-;; Git worktree create/remove/list operations using call-process directly.
+;; Git worktree create/remove/list operations using the wt CLI.
 ;; No magit dependency required.
 
 ;;; Code:
 
 (require 'cl-lib)
 
-(defun workset-worktree-create (repo-root worktree-path branch &optional start-point)
-  "Create a git worktree at WORKTREE-PATH with BRANCH from REPO-ROOT.
-START-POINT defaults to HEAD.  If BRANCH already exists, checks it out
-into the worktree instead of creating a new branch."
-  (let ((default-directory repo-root)
-        (start (or start-point "HEAD")))
-    (make-directory (file-name-directory worktree-path) t)
-    (let ((exit-code
-           (call-process "git" nil nil nil
-                         "worktree" "add" "-b" branch worktree-path start)))
-      (unless (zerop exit-code)
-        ;; Branch may already exist; try without -b
-        (let ((exit-code2
-               (call-process "git" nil nil nil
-                             "worktree" "add" worktree-path branch)))
-          (unless (zerop exit-code2)
-            (error "Failed to create worktree at %s for branch %s" worktree-path branch)))))))
-
-(defun workset-worktree-remove (repo-root worktree-path)
-  "Remove git worktree at WORKTREE-PATH from REPO-ROOT.
-Offers force removal on failure, then prunes stale worktrees."
+(defun workset-worktree-create (repo-root branch)
+  "Create a worktree for BRANCH from REPO-ROOT using wt CLI.
+Calls `wt switch -c BRANCH --no-cd -y' from REPO-ROOT, then resolves
+the new worktree path from `wt list --format=json'.
+Returns the path to the created worktree."
   (let ((default-directory repo-root))
     (let ((exit-code
-           (call-process "git" nil nil nil "worktree" "remove" worktree-path)))
+           (call-process "wt" nil nil nil
+                         "switch" "-c" branch "--no-cd" "-y")))
       (unless (zerop exit-code)
-        (if (yes-or-no-p (format "Worktree removal failed.  Force remove %s? " worktree-path))
-            (let ((exit-code2
-                   (call-process "git" nil nil nil
-                                 "worktree" "remove" "--force" worktree-path)))
-              (unless (zerop exit-code2)
-                (error "Force removal of worktree %s failed" worktree-path)))
-          (error "Worktree removal aborted"))))
-    (call-process "git" nil nil nil "worktree" "prune")))
+        (error "Wt switch -c %s failed (exit %d)" branch exit-code)))
+    ;; Resolve the worktree path by listing all worktrees
+    (let ((worktrees (workset-worktree-list repo-root)))
+      (let ((entry (cl-find-if (lambda (wt)
+                                 (equal (plist-get wt :branch) branch))
+                               worktrees)))
+        (unless entry
+          (error "Could not find worktree for branch %s after creation" branch))
+        (plist-get entry :path)))))
+
+(defun workset-worktree-remove (repo-root branch)
+  "Remove the worktree for BRANCH from REPO-ROOT using wt CLI.
+Calls `wt remove BRANCH -y --force' from REPO-ROOT."
+  (let ((default-directory repo-root))
+    (let ((exit-code
+           (call-process "wt" nil nil nil
+                         "remove" branch "-y" "--force")))
+      (unless (zerop exit-code)
+        (error "Wt remove %s failed (exit %d)" branch exit-code)))))
 
 (defun workset-worktree-list (repo-root)
-  "List git worktrees for REPO-ROOT.
-Returns a list of plists with :path, :head, and :branch keys."
+  "List git worktrees for REPO-ROOT using wt CLI.
+Calls `wt list --format=json' and parses the output.
+Returns a list of plists with :path, :head, and :branch keys.
+Branch values are bare names with no refs/heads/ prefix."
   (let ((default-directory repo-root))
     (with-temp-buffer
-      (call-process "git" nil t nil "worktree" "list" "--porcelain")
-      (workset-worktree--parse-porcelain (buffer-string)))))
+      (let ((exit-code
+             (call-process "wt" nil t nil "list" "--format=json")))
+        (unless (zerop exit-code)
+          (error "Wt list --format=json failed (exit %d)" exit-code)))
+      (goto-char (point-min))
+      (condition-case err
+          (let ((json (json-parse-buffer :object-type 'hash-table
+                                         :array-type 'list)))
+            (mapcar (lambda (entry)
+                      (let* ((raw-branch (gethash "branch" entry))
+                             (branch (when (and raw-branch
+                                                (not (equal raw-branch "")))
+                                       (replace-regexp-in-string
+                                        "\\`refs/heads/" "" raw-branch))))
+                        (list :path   (gethash "path" entry)
+                              :head   (gethash "head" entry)
+                              :branch branch)))
+                    json))
+        (error
+         (error "Failed to parse wt list JSON output: %s" (error-message-string err)))))))
 
 (defun workset-worktree--parse-porcelain (output)
   "Parse porcelain OUTPUT from `git worktree list' into plists."
@@ -73,27 +89,6 @@ Returns a list of plists with :path, :head, and :branch keys."
     (when current
       (push current entries))
     (nreverse entries)))
-
-(defun workset-worktree-copy-files (source-dir target-dir patterns)
-  "Copy files matching PATTERNS from SOURCE-DIR to TARGET-DIR.
-PATTERNS is a list of filenames or glob patterns.
-Only copies files that don't already exist in TARGET-DIR."
-  (dolist (pattern patterns)
-    (let ((matches (if (workset-worktree--glob-pattern-p pattern)
-                       (file-expand-wildcards
-                        (expand-file-name pattern source-dir) t)
-                     (let ((f (expand-file-name pattern source-dir)))
-                       (when (file-exists-p f) (list f))))))
-      (dolist (source-file matches)
-        (let* ((relative (file-relative-name source-file source-dir))
-               (target-file (expand-file-name relative target-dir)))
-          (unless (file-exists-p target-file)
-            (make-directory (file-name-directory target-file) t)
-            (copy-file source-file target-file)))))))
-
-(defun workset-worktree--glob-pattern-p (pattern)
-  "Return non-nil if PATTERN contains glob characters."
-  (string-match-p "[*?\\[]" pattern))
 
 (defun workset-worktree-list-branches (repo-root)
   "Return a deduplicated list of branch names for REPO-ROOT.
@@ -183,42 +178,6 @@ TYPE is either `linked' (linked worktree) or `main' (standalone repo)."
                 (walk entry (1+ level))))))))))
       (walk (expand-file-name base-dir) 0)
       (nreverse result))))
-
-(defun workset-worktree-read-config (repo-root)
-  "Read `.superset/config.json' from REPO-ROOT and return a plist.
-Returns (:setup LIST :teardown LIST) where each value is a list of
-strings, or nil.  If the file is missing or the JSON is malformed,
-returns (:setup nil :teardown nil) without signaling an error."
-  (let ((config-file (expand-file-name ".superset/config.json" repo-root)))
-    (if (not (file-exists-p config-file))
-        (list :setup nil :teardown nil)
-      (condition-case _err
-          (with-temp-buffer
-            (insert-file-contents config-file)
-            (let ((json (json-parse-buffer :object-type 'hash-table
-                                           :array-type 'list)))
-              (list :setup (gethash "setup" json)
-                    :teardown (gethash "teardown" json))))
-        (error
-         (message "workset: failed to parse %s" config-file)
-         (list :setup nil :teardown nil))))))
-
-(defun workset-worktree-run-scripts (commands directory &optional label)
-  "Execute shell COMMANDS in DIRECTORY, logging output to *workset-scripts*.
-COMMANDS is a list of strings; each may contain embedded newlines.
-LABEL is an optional string like \"setup\" or \"teardown\" for log messages.
-On non-zero exit, logs a warning via `message' but does not signal an error."
-  (when commands
-    (let ((default-directory directory)
-          (output-buf (get-buffer-create "*workset-scripts*")))
-      (dolist (cmd commands)
-        (with-current-buffer output-buf
-          (goto-char (point-max))
-          (insert (format "\n--- %s: %s ---\n" (or label "script") cmd)))
-        (let ((exit-code (call-process "/bin/sh" nil output-buf nil "-c" cmd)))
-          (unless (zerop exit-code)
-            (message "workset: %s command exited with %d: %s"
-                     (or label "script") exit-code cmd)))))))
 
 (provide 'workset-worktree)
 ;;; workset-worktree.el ends here
