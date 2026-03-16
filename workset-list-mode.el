@@ -101,6 +101,8 @@
 (declare-function workset-worktree-list-full "workset-worktree")
 (declare-function workset-worktree-discover-in-directory "workset-worktree")
 (declare-function workset-worktree-remove "workset-worktree")
+(declare-function workset-worktree-merge "workset-worktree")
+(declare-function workset-worktree-switch "workset")
 (declare-function workset-create "workset")
 (declare-function workset-load "workset")
 (declare-function workset-load-pr "workset")
@@ -468,6 +470,7 @@ Returns empty string when count is 0."
     (define-key map (kbd "RET") #'workset-list-open)
     (define-key map (kbd "t") #'workset-list-vterm)
     (define-key map (kbd "r") #'workset-list-remove)
+    (define-key map (kbd "m") #'workset-list-merge)
     (define-key map (kbd "d") #'workset-list-dired)
     (define-key map (kbd "a") #'workset-add-repo)
     (define-key map (kbd "R") #'workset-remove-repo)
@@ -579,14 +582,17 @@ KEY, REPO-ROOT, and BRANCH describe the worktree.  Return the key."
     (cond
      (entry
       (let* ((path (plist-get entry :path))
-             (type (plist-get entry :type)))
+             (type (plist-get entry :type))
+             (repo-root (plist-get entry :repo-root))
+             (branch (plist-get entry :branch)))
+        ;; If branch-only, create worktree first
+        (when (eq type 'wt-branch)
+          (setq path (workset-worktree-switch repo-root branch)))
         (unless path
           (user-error "Cannot determine worktree path"))
         (unless (file-directory-p path)
           (user-error "Worktree %s no longer exists" path))
         (let* ((key (plist-get entry :key))
-               (repo-root (plist-get entry :repo-root))
-               (branch (plist-get entry :branch))
                (active-key (if (eq type 'active)
                                key
                              (workset-list--ensure-active path key repo-root branch)))
@@ -686,9 +692,47 @@ Use `workset-remove-repo' (R) to unregister a repo."
            (user-error "Aborted"))
          (workset-worktree-remove repo-root branch)
          (message "Removed worktree %s" path)))
+      ('wt-branch
+       (let ((branch (plist-get entry :branch))
+             (repo-root (plist-get entry :repo-root)))
+         (unless (yes-or-no-p (format "Delete branch %s? " branch))
+           (user-error "Aborted"))
+         (workset-worktree-remove repo-root branch)
+         (message "Deleted branch %s" branch)))
       (_
        (user-error "Unknown entry type: %s" type)))
     (workset-list-refresh)))
+
+(defun workset-list-merge ()
+  "Merge the worktree at point into the default branch using wt merge."
+  (interactive)
+  (let* ((entry (workset-list--entry-at-point)))
+    (unless entry
+      (user-error "No worktree entry at point"))
+    (let ((type (plist-get entry :type))
+          (branch (plist-get entry :branch))
+          (repo-root (plist-get entry :repo-root)))
+      (when (eq type 'wt-branch)
+        (user-error "Cannot merge a branch without a worktree; switch to it first"))
+      (when (string= (plist-get entry :main-state) "is_main")
+        (user-error "Cannot merge the main branch"))
+      (unless (and branch (not (string-empty-p branch)))
+        (user-error "No branch for this entry"))
+      (unless (yes-or-no-p (format "Merge %s into main and remove worktree? " branch))
+        (user-error "Aborted"))
+      ;; Kill vterm buffers if active
+      (when (eq type 'active)
+        (let* ((key (plist-get entry :key))
+               (ws (workset--get key))
+               (repo-name (workset--ws-repo-name key ws))
+               (task (workset--ws-task key ws)))
+          (dolist (buf (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
+            (when (buffer-live-p buf)
+              (kill-buffer buf)))
+          (workset--remove key)))
+      (workset-worktree-merge repo-root branch)
+      (message "Merged %s and removed worktree" branch)
+      (workset-list-refresh))))
 
 (defun workset-list-dired ()
   "Open dired at the worktree path or repo root at point."
@@ -735,6 +779,8 @@ Use `workset-remove-repo' (R) to unregister a repo."
    ("r" "Remove"            workset-list-remove)
    ("a" "Add repo"          workset-add-repo)
    ("R" "Remove repo"       workset-remove-repo)]
+  ["Git"
+   ("m" "Merge into main"   workset-list-merge)]
   ["Buffer"
    ("g" "Refresh"           workset-list-refresh :transient t)
    ("q" "Quit"              quit-window)])
