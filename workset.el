@@ -535,6 +535,145 @@ Returns an alist of (\"#N: title\" . \"N\")."
     (let ((task (workset-worktree--task-from-branch branch workset-branch-prefix)))
       (workset--load-branch repo-root (concat "origin/" branch) task))))
 
+;;;; Migration helpers
+
+(defun workset-migrate--user-config-toml ()
+  "Return the TOML string for the Worktrunk user config.
+Builds a worktree-path template based on `workset-create-directory'."
+  (let ((worktree-path
+         (if (eq workset-create-directory 'superset)
+             (let* ((base (expand-file-name "worktrees"
+                                            workset-superset-directory))
+                    (parts (list base)))
+               (unless (string-empty-p workset-default-organization)
+                 (setq parts (append parts (list workset-default-organization))))
+               (unless (string-empty-p workset-default-owner)
+                 (setq parts (append parts (list workset-default-owner))))
+               (setq parts (append parts (list "{{ branch | sanitize }}")))
+               (mapconcat #'identity parts "/"))
+           (concat workset-base-directory
+                   "/worktrees/{{ repo }}/{{ branch | sanitize }}"))))
+    (format "worktree-path = \"%s\"\n" worktree-path)))
+
+(defun workset-migrate--project-config-toml (repo-root)
+  "Return the TOML string for the Worktrunk project config in REPO-ROOT.
+Reads `.superset/config.json' if it exists for setup/teardown hooks."
+  (let* ((config-file (expand-file-name ".superset/config.json" repo-root))
+         (setup-cmds nil)
+         (teardown-cmds nil))
+    ;; Parse .superset/config.json if present
+    (when (file-readable-p config-file)
+      (with-temp-buffer
+        (insert-file-contents config-file)
+        (goto-char (point-min))
+        (condition-case _
+            (let ((json (json-parse-buffer :object-type 'hash-table
+                                           :array-type 'list)))
+              (setq setup-cmds (gethash "setup" json nil))
+              (setq teardown-cmds (gethash "teardown" json nil)))
+          (error nil))))
+    ;; Build [post-create] section
+    (let ((lines nil))
+      (push "[post-create]" lines)
+      (let ((i 1))
+        (dolist (cmd (or setup-cmds nil))
+          (push (format "setup-%d = \"%s\"" i (string-replace "\"" "\\\"" cmd)) lines)
+          (setq i (1+ i))))
+      (push "copy = \"wt step copy-ignored\"" lines)
+      ;; Build [pre-remove] section if teardown commands exist
+      (when teardown-cmds
+        (push "" lines)
+        (push "[pre-remove]" lines)
+        (let ((i 1))
+          (dolist (cmd teardown-cmds)
+            (push (format "teardown-%d = \"%s\"" i (string-replace "\"" "\\\"" cmd)) lines)
+            (setq i (1+ i)))))
+      (mapconcat #'identity (nreverse lines) "\n"))))
+
+(defun workset-migrate--register-worktrees (repo-root)
+  "Discover and register untracked worktrees for REPO-ROOT with wt.
+Returns a list of branch names that were registered."
+  (let* ((known-worktrees (workset-worktree-list repo-root))
+         (known-branches (delq nil (mapcar (lambda (wt) (plist-get wt :branch))
+                                           known-worktrees)))
+         (registered nil))
+    (dolist (base-dir (workset--discovery-directories))
+      (when (file-directory-p base-dir)
+        (dolist (wt (workset-worktree-discover-in-directory base-dir))
+          (let ((wt-repo-root (plist-get wt :repo-root))
+                (branch (plist-get wt :branch)))
+            (when (and branch
+                       (not (string-empty-p branch))
+                       wt-repo-root
+                       (equal (file-truename wt-repo-root)
+                              (file-truename repo-root))
+                       (not (member branch known-branches)))
+              ;; Register this worktree with wt
+              (let ((default-directory repo-root))
+                (let ((exit-code (call-process "wt" nil nil nil
+                                               "switch" branch "--no-cd" "-y")))
+                  (when (zerop exit-code)
+                    (push branch registered)
+                    ;; Add to known list to avoid double-registering
+                    (push branch known-branches)))))))))
+    (nreverse registered)))
+
+;;;###autoload
+(defun workset-migrate ()
+  "Migrate existing workset configuration to Worktrunk (wt).
+Generates wt config files and registers existing worktrees with wt.
+Results are displayed in the *workset-migrate* buffer."
+  (interactive)
+  (let ((output-lines nil)
+        (user-config-path (expand-file-name "~/.config/worktrunk/config.toml")))
+    ;; --- Step 1: Generate user config ---
+    (if (file-exists-p user-config-path)
+        (push (format "SKIP user config (already exists): %s" user-config-path)
+              output-lines)
+      (let ((toml (workset-migrate--user-config-toml))
+            (dir (file-name-directory user-config-path)))
+        (make-directory dir t)
+        (with-temp-file user-config-path
+          (insert toml))
+        (push (format "WROTE user config: %s" user-config-path) output-lines)
+        (push (format "  %s" (string-trim toml)) output-lines)))
+    ;; --- Step 2: Generate project configs and register worktrees ---
+    (dolist (repo-root workset-repos)
+      (push (format "\nRepo: %s" repo-root) output-lines)
+      ;; Project config
+      (let ((wt-config (expand-file-name ".config/wt.toml" repo-root)))
+        (if (file-exists-p wt-config)
+            (push (format "  SKIP project config (already exists): %s" wt-config)
+                  output-lines)
+          (let ((toml (workset-migrate--project-config-toml repo-root))
+                (dir (file-name-directory wt-config)))
+            (make-directory dir t)
+            (with-temp-file wt-config
+              (insert toml "\n"))
+            (push (format "  WROTE project config: %s" wt-config) output-lines))))
+      ;; Register worktrees
+      (condition-case err
+          (let ((registered (workset-migrate--register-worktrees repo-root)))
+            (if registered
+                (dolist (branch registered)
+                  (push (format "  REGISTERED worktree: %s" branch) output-lines))
+              (push "  No unregistered worktrees found" output-lines)))
+        (error
+         (push (format "  ERROR registering worktrees: %s" (error-message-string err))
+               output-lines))))
+    ;; Display results
+    (let ((buf (get-buffer-create "*workset-migrate*")))
+      (with-current-buffer buf
+        (read-only-mode -1)
+        (erase-buffer)
+        (insert "Workset Migration Results\n")
+        (insert "=========================\n\n")
+        (dolist (line (nreverse output-lines))
+          (insert line "\n"))
+        (read-only-mode 1)
+        (goto-char (point-min)))
+      (pop-to-buffer buf))))
+
 ;;;; Transient menu
 
 ;;;###autoload (autoload 'workset "workset" nil t)
