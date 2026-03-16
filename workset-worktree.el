@@ -44,33 +44,75 @@ Calls `wt remove BRANCH -y --force' from REPO-ROOT."
       (unless (zerop exit-code)
         (error "Wt remove %s failed (exit %d)" branch exit-code)))))
 
-(defun workset-worktree-list (repo-root)
-  "List git worktrees for REPO-ROOT using wt CLI.
-Calls `wt list --format=json' and parses the output.
-Returns a list of plists with :path, :head, and :branch keys.
-Branch values are bare names with no refs/heads/ prefix."
+(defun workset-worktree--parse-wt-entry (entry)
+  "Convert a single hash-table ENTRY from `wt list --format=json' into a plist.
+Returns a flat plist with keys:
+  :branch :path :kind
+  :commit-sha :commit-short-sha :commit-message :commit-timestamp
+  :working-tree :main-state :main-ahead :main-behind
+  :remote-name :remote-branch :remote-ahead :remote-behind
+  :symbols :is-main :is-current :is-previous"
+  (let* ((raw-branch (gethash "branch" entry))
+         (branch (when (and raw-branch (not (equal raw-branch "")))
+                   (replace-regexp-in-string "\\`refs/heads/" "" raw-branch)))
+         (kind (gethash "kind" entry))
+         (path (when (equal kind "worktree") (gethash "path" entry)))
+         (commit (gethash "commit" entry))
+         (main   (gethash "main" entry))
+         (remote (gethash "remote" entry)))
+    (list :branch            branch
+          :path              path
+          :kind              kind
+          :commit-sha        (when commit (gethash "sha" commit))
+          :commit-short-sha  (when commit (gethash "shortSha" commit))
+          :commit-message    (when commit (gethash "message" commit))
+          :commit-timestamp  (when commit (gethash "timestamp" commit))
+          :working-tree      (gethash "workingTree" entry)
+          :main-state        (when main (gethash "state" main))
+          :main-ahead        (when main (gethash "ahead" main))
+          :main-behind       (when main (gethash "behind" main))
+          :remote-name       (when remote (gethash "name" remote))
+          :remote-branch     (when remote (gethash "branch" remote))
+          :remote-ahead      (when remote (gethash "ahead" remote))
+          :remote-behind     (when remote (gethash "behind" remote))
+          :symbols           (gethash "symbols" entry)
+          :is-main           (gethash "isMain" entry)
+          :is-current        (gethash "isCurrent" entry)
+          :is-previous       (gethash "isPrevious" entry))))
+
+(defun workset-worktree-list-full (repo-root &optional include-branches)
+  "List all wt entries for REPO-ROOT with full metadata.
+When INCLUDE-BRANCHES is non-nil, passes --branches to wt list.
+Calls `wt list --format=json [--branches]' and parses the output.
+Returns a list of plists as produced by `workset-worktree--parse-wt-entry'."
   (let ((default-directory repo-root))
     (with-temp-buffer
-      (let ((exit-code
-             (call-process "wt" nil t nil "list" "--format=json")))
+      (let* ((args (append '("list" "--format=json")
+                           (when include-branches '("--branches"))))
+             (exit-code (apply #'call-process "wt" nil t nil args)))
         (unless (zerop exit-code)
           (error "Wt list --format=json failed (exit %d)" exit-code)))
       (goto-char (point-min))
       (condition-case err
           (let ((json (json-parse-buffer :object-type 'hash-table
                                          :array-type 'list)))
-            (mapcar (lambda (entry)
-                      (let* ((raw-branch (gethash "branch" entry))
-                             (branch (when (and raw-branch
-                                                (not (equal raw-branch "")))
-                                       (replace-regexp-in-string
-                                        "\\`refs/heads/" "" raw-branch))))
-                        (list :path   (gethash "path" entry)
-                              :head   (gethash "head" entry)
-                              :branch branch)))
-                    json))
+            (mapcar #'workset-worktree--parse-wt-entry json))
         (error
          (error "Failed to parse wt list JSON output: %s" (error-message-string err)))))))
+
+(defun workset-worktree-list (repo-root)
+  "List git worktrees for REPO-ROOT using wt CLI.
+Calls `wt list --format=json' and parses the output.
+Returns a list of plists with :path, :head, and :branch keys.
+Branch values are bare names with no refs/heads/ prefix."
+  (let ((full (workset-worktree-list-full repo-root)))
+    (mapcar (lambda (entry)
+              (list :path   (plist-get entry :path)
+                    :head   (plist-get entry :commit-sha)
+                    :branch (plist-get entry :branch)))
+            (cl-remove-if (lambda (entry)
+                            (equal (plist-get entry :kind) "branch"))
+                          full))))
 
 
 (defun workset-worktree-list-branches (repo-root)
@@ -161,6 +203,30 @@ TYPE is either `linked' (linked worktree) or `main' (standalone repo)."
                 (walk entry (1+ level))))))))))
       (walk (expand-file-name base-dir) 0)
       (nreverse result))))
+
+(defun workset-worktree-merge (repo-root branch &optional target)
+  "Merge worktree for BRANCH from REPO-ROOT using wt CLI.
+Looks up the worktree path for BRANCH via `workset-worktree-list-full',
+then runs `wt merge -y [TARGET]' from that worktree directory.
+Returns non-nil on success, signals an error on failure."
+  (let* ((entries (workset-worktree-list-full repo-root))
+         (entry (cl-find-if (lambda (e)
+                              (equal (plist-get e :branch) branch))
+                            entries)))
+    (unless entry
+      (error "No worktree found for branch %s" branch))
+    (let ((worktree-path (plist-get entry :path)))
+      (unless worktree-path
+        (error "Worktree for branch %s has no path" branch))
+      (let ((default-directory worktree-path))
+        (with-temp-buffer
+          (let* ((args (append '("merge" "-y")
+                               (when target (list target))))
+                 (exit-code (apply #'call-process "wt" nil t nil args)))
+            (unless (zerop exit-code)
+              (error "Wt merge failed for branch %s: %s"
+                     branch (buffer-string)))
+            t))))))
 
 (provide 'workset-worktree)
 ;;; workset-worktree.el ends here
