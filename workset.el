@@ -253,10 +253,11 @@ Prefers the stored :task, falls back to remainder of KEY after first /."
 (define-key workset-prefix-map (kbd "R") #'workset-remove-repo)
 
 ;;;###autoload
-(defun workset-create ()
-  "Create a new workset: select project, name task, create worktree, open vterm."
+(defun workset-create (&optional repo-root)
+  "Create a new workset: select project, name task, create worktree, open vterm.
+When REPO-ROOT is non-nil, use it instead of prompting for a project."
   (interactive)
-  (let* ((repo-root (workset-project-select))
+  (let* ((repo-root (or repo-root (workset-project-select)))
          (repo-name (workset--repo-name repo-root))
          (task (read-string (format "Task name for %s: " repo-name)))
          (key (workset--make-key repo-name task))

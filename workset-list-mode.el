@@ -389,7 +389,7 @@ Returns empty string when count is 0."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "g") #'workset-list-refresh)
     (define-key map (kbd "q") #'quit-window)
-    (define-key map (kbd "c") #'workset-create)
+    (define-key map (kbd "c") #'workset-list-create)
     (define-key map (kbd "b") #'workset-load)
     (define-key map (kbd "P") #'workset-load-pr)
     (define-key map (kbd "RET") #'workset-list-open)
@@ -636,6 +636,12 @@ Use `workset-remove-repo' (R) to unregister a repo."
      (t
       (user-error "No workset entry or repo at point")))))
 
+(defun workset-list-create ()
+  "Create a workset, using the repo at point if available."
+  (interactive)
+  (let ((repo-root (workset-list--repo-root-at-point)))
+    (workset-create repo-root)))
+
 ;;;; Transient help menu
 
 (transient-define-prefix workset-list-dispatch ()
@@ -648,7 +654,7 @@ Use `workset-remove-repo' (R) to unregister a repo."
    ("t"   "Open terminal"      workset-list-vterm)
    ("d"   "Dired"              workset-list-dired)]
   ["Create"
-   ("c" "Create workset"    workset-create)
+   ("c" "Create workset"    workset-list-create)
    ("b" "Load branch"       workset-load)
    ("P" "Load pull request" workset-load-pr)]
   ["Manage"
