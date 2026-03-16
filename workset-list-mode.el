@@ -1,4 +1,4 @@
-;;; Workset-list-mode.el --- Tabular workset listing  -*- lexical-binding: t; -*-
+;;; Workset-List-mode.el --- Tabular workset listing  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Eric
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -58,6 +58,16 @@
   "Face for entry type labels."
   :group 'workset-list)
 
+(defface workset-list-terminal-idle
+  '((t :inherit success))
+  "Face for terminal indicator when all terminals are idle."
+  :group 'workset-list)
+
+(defface workset-list-terminal-busy
+  '((t :inherit warning))
+  "Face for terminal indicator when some terminals are busy."
+  :group 'workset-list)
+
 ;;;; Forward declarations
 
 (defvar workset--active-worksets)
@@ -74,6 +84,9 @@
 (declare-function workset--remove "workset")
 (declare-function workset-vterm-list "workset-vterm")
 (declare-function workset-vterm-create "workset-vterm")
+(declare-function vterm--at-prompt-p "vterm")
+
+(defvar vterm--prompt-tracking-enabled-p)
 (declare-function workset-worktree-list "workset-worktree")
 (declare-function workset-worktree-discover-in-directory "workset-worktree")
 (declare-function workset-worktree-remove "workset-worktree")
@@ -180,6 +193,63 @@ Each entry is a plist with :type, :key, :path, :repo-root,
                        (string-lessp (downcase (car a))
                                      (downcase (car b)))))))))
 
+;;;; Terminal status helpers
+
+(defun workset-list--vterm-status (buffers)
+  "Classify BUFFERS into a status plist (:count N :state STATE).
+STATE is `idle' if all are at prompt, `busy' if any is running a
+command, or `unknown' if prompt tracking is not available."
+  (let ((count (length buffers))
+        (unknown 0)
+        (busy 0))
+    (dolist (buf buffers)
+      (with-current-buffer buf
+        (if (and (boundp 'vterm--prompt-tracking-enabled-p)
+                 vterm--prompt-tracking-enabled-p)
+            (unless (vterm--at-prompt-p)
+              (cl-incf busy))
+          (cl-incf unknown))))
+    (list :count count
+          :state (cond
+                  ((> unknown 0) 'unknown)
+                  ((> busy 0)    'busy)
+                  (t             'idle)))))
+
+(defun workset-list--format-terminal-indicator (status)
+  "Format STATUS plist into a propertized terminal indicator string.
+Returns empty string when count is 0."
+  (let ((count (plist-get status :count))
+        (state (plist-get status :state)))
+    (if (zerop count)
+        ""
+      (let* ((suffix (pcase state
+                       ('busy    "*")
+                       ('unknown "?")
+                       (_        "")))
+             (face (pcase state
+                     ('idle    'workset-list-terminal-idle)
+                     ('busy    'workset-list-terminal-busy)
+                     ('unknown 'workset-list-type)))
+             (text (format " [T:%d%s]" count suffix)))
+        (propertize text 'face face)))))
+
+(defun workset-list--entry-vterm-buffers (entry)
+  "Return live vterm buffers for ENTRY plist."
+  (let* ((key (plist-get entry :key))
+         (type (plist-get entry :type)))
+    (when key
+      (let (repo-name task)
+        (if (eq type 'active)
+            (let ((ws (workset--get key)))
+              (setq repo-name (workset--ws-repo-name key ws))
+              (setq task (workset--ws-task key ws)))
+          ;; For discovered/git-worktree, derive from entry
+          (setq repo-name (or (plist-get entry :repo-name) ""))
+          (setq task (file-name-nondirectory
+                      (directory-file-name (or (plist-get entry :path) key)))))
+        (workset-vterm-list workset-vterm-buffer-name-format
+                            repo-name task)))))
+
 ;;;; Buffer rendering
 
 (defun workset-list--insert-border (prefix char width)
@@ -203,13 +273,24 @@ Each entry is a plist with :type, :key, :path, :repo-root,
   (let* ((repo-path (workset-list--repo-path entries))
          (repo-root (workset-list--repo-root-from-entries entries))
          (count (length entries))
+         (term-indicator
+          (if repo-root
+              (let ((bufs (workset-vterm-list
+                           workset-vterm-buffer-name-format
+                           (workset--repo-name repo-root) "main")))
+                (if bufs
+                    (workset-list--format-terminal-indicator
+                     (workset-list--vterm-status bufs))
+                  ""))
+            ""))
          (header (concat (propertize repo-name 'face 'workset-list-repo)
                          (when repo-path
                            (concat "  "
                                    (propertize repo-path
                                                'face 'workset-list-repo-path)))
                          (propertize (format "  (%d)" count)
-                                    'face 'workset-list-type)))
+                                    'face 'workset-list-type)
+                         term-indicator))
          (beg (point)))
     (workset-list--insert-border "┌─" ?─ 78)
     (insert (propertize "│ " 'face 'workset-list-border) header "\n")
@@ -230,14 +311,21 @@ Each entry is a plist with :type, :key, :path, :repo-root,
          ;; Derive a short display name from the key
          (display-name (file-name-nondirectory (directory-file-name key)))
          (beg (point)))
-    (insert (propertize "│ " 'face 'workset-list-border)
-            (propertize connector 'face 'workset-list-border)
-            (propertize (workset-list--pad display-name 25) 'face name-face)
-            " "
-            (propertize (workset-list--pad status 12) 'face 'workset-list-type)
-            (propertize (workset-list--pad branch 30) 'face 'workset-list-branch)
-            (propertize path 'face 'workset-list-path)
-            "\n")
+    (let ((term-indicator
+           (let ((bufs (workset-list--entry-vterm-buffers entry)))
+             (if bufs
+                 (workset-list--format-terminal-indicator
+                  (workset-list--vterm-status bufs))
+               ""))))
+      (insert (propertize "│ " 'face 'workset-list-border)
+              (propertize connector 'face 'workset-list-border)
+              (propertize (workset-list--pad display-name 25) 'face name-face)
+              " "
+              (propertize (workset-list--pad status 12) 'face 'workset-list-type)
+              (propertize (workset-list--pad branch 30) 'face 'workset-list-branch)
+              (propertize path 'face 'workset-list-path)
+              term-indicator
+              "\n"))
     ;; Store the entry plist as a text property on the line
     (put-text-property beg (point) 'workset-entry entry)))
 
@@ -251,13 +339,24 @@ Each entry is a plist with :type, :key, :path, :repo-root,
                         (when repo-root
                           (abbreviate-file-name repo-root))))
          (beg (point)))
-    (insert (propertize "─── " 'face 'workset-list-border)
-            (propertize repo-name 'face 'workset-list-repo)
-            (if repo-path
-                (concat "  "
-                        (propertize repo-path 'face 'workset-list-repo-path))
-              "")
-            "\n")
+    (let ((term-indicator
+           (if repo-root
+               (let ((bufs (workset-vterm-list
+                            workset-vterm-buffer-name-format
+                            (workset--repo-name repo-root) "main")))
+                 (if bufs
+                     (workset-list--format-terminal-indicator
+                      (workset-list--vterm-status bufs))
+                   ""))
+             "")))
+      (insert (propertize "─── " 'face 'workset-list-border)
+              (propertize repo-name 'face 'workset-list-repo)
+              (if repo-path
+                  (concat "  "
+                          (propertize repo-path 'face 'workset-list-repo-path))
+                "")
+              term-indicator
+              "\n"))
     ;; Make it actionable if there's a single project entry
     (when (and entries (= (length entries) 1))
       (put-text-property beg (point) 'workset-entry (car entries)))
