@@ -260,29 +260,21 @@ Prefers the stored :task, falls back to remainder of KEY after first /."
          (repo-name (workset--repo-name repo-root))
          (task (read-string (format "Task name for %s: " repo-name)))
          (key (workset--make-key repo-name task))
-         (branch (concat workset-branch-prefix task))
-         (wt-path (workset--worktree-directory repo-name task)))
+         (branch (concat workset-branch-prefix task)))
     (when (string-empty-p task)
       (user-error "Task name cannot be empty"))
     (when (workset--get key)
       (user-error "Workset %s already exists" key))
-    (if (file-directory-p wt-path)
-        (unless (yes-or-no-p (format "Worktree directory %s already exists.  Use it? " wt-path))
-          (user-error "Aborted"))
-      (workset-worktree-create repo-root wt-path branch workset-start-point))
-    (workset-worktree-copy-files repo-root wt-path workset-copy-patterns)
-    (let ((config (workset-worktree-read-config repo-root)))
-      (when (plist-get config :setup)
-        (workset-worktree-run-scripts (plist-get config :setup) wt-path "setup")))
-    (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
-      (workset--put key
-                    (list :repo-root repo-root
-                          :worktree-path wt-path
-                          :branch branch
-                          :repo-name repo-name
-                          :task task
-                          :vterm-buffers (list buf)))
-      (message "Created workset %s" key))))
+    (let ((wt-path (workset-worktree-create repo-root branch)))
+      (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
+        (workset--put key
+                      (list :repo-root repo-root
+                            :worktree-path wt-path
+                            :branch branch
+                            :repo-name repo-name
+                            :task task
+                            :vterm-buffers (list buf)))
+        (message "Created workset %s" key)))))
 
 ;;;###autoload
 (defun workset-open ()
@@ -397,11 +389,7 @@ REPO-ROOT is nil or has no linked worktrees."
         (let ((wt-path (plist-get wt :path)))
           ;; Skip the main worktree
           (unless (equal (file-truename wt-path) repo-truename)
-            (let* ((branch-ref (plist-get wt :branch))
-                   (branch (if branch-ref
-                               (replace-regexp-in-string
-                                "\\`refs/heads/" "" branch-ref)
-                             ""))
+            (let* ((branch (or (plist-get wt :branch) ""))
                    (task (workset-worktree--task-from-branch
                           branch workset-branch-prefix))
                    (key (workset--key repo-name task)))
@@ -460,10 +448,8 @@ worktree's relative path under its base directory."
     ;; Optionally remove worktree
     (when (and (file-directory-p wt-path)
                (yes-or-no-p (format "Also remove worktree at %s? " wt-path)))
-      (let ((config (workset-worktree-read-config repo-root)))
-        (when (plist-get config :teardown)
-          (workset-worktree-run-scripts (plist-get config :teardown) wt-path "teardown")))
-      (workset-worktree-remove repo-root wt-path))
+      (let ((branch (plist-get ws :branch)))
+        (workset-worktree-remove repo-root branch)))
     (workset--remove key)
     (message "Removed workset %s" key)))
 
@@ -471,50 +457,28 @@ worktree's relative path under its base directory."
 
 (defun workset--load-branch (repo-root branch task)
   "Load BRANCH into a workset for REPO-ROOT with task name TASK.
-Handles remote-tracking refs by creating a local tracking branch."
+Handles remote-tracking refs by deriving a local branch name."
   (let* ((repo-name (workset--repo-name repo-root))
          (key (workset--make-key repo-name task))
-         (wt-path (workset--worktree-directory repo-name task)))
+         ;; For remote-tracking refs, derive a local branch name
+         (local-branch (if (string-match-p "/" branch)
+                           (concat workset-branch-prefix
+                                   (workset-worktree--task-from-branch branch))
+                         branch)))
     (when (string-empty-p task)
       (user-error "Task name cannot be empty"))
     (when (workset--get key)
       (user-error "Workset %s already exists" key))
-    (if (file-directory-p wt-path)
-        (unless (yes-or-no-p (format "Worktree directory %s already exists.  Use it? " wt-path))
-          (user-error "Aborted"))
-      (let ((default-directory repo-root))
-        (make-directory (file-name-directory wt-path) t)
-        (if (string-match-p "/" branch)
-            ;; Remote-tracking branch: create local tracking branch
-            (let* ((local-name (workset-worktree--task-from-branch branch))
-                   (local-branch (concat workset-branch-prefix local-name))
-                   (exit-code (call-process "git" nil nil nil
-                                            "worktree" "add" "--track"
-                                            "-b" local-branch wt-path branch)))
-              (unless (zerop exit-code)
-                ;; Branch may already exist locally; try without -b
-                (let ((exit-code2 (call-process "git" nil nil nil
-                                                "worktree" "add" wt-path local-branch)))
-                  (unless (zerop exit-code2)
-                    (error "Failed to create worktree at %s for branch %s" wt-path branch)))))
-          ;; Local branch
-          (let ((exit-code (call-process "git" nil nil nil
-                                         "worktree" "add" wt-path branch)))
-            (unless (zerop exit-code)
-              (error "Failed to create worktree at %s for branch %s" wt-path branch))))))
-    (workset-worktree-copy-files repo-root wt-path workset-copy-patterns)
-    (let ((config (workset-worktree-read-config repo-root)))
-      (when (plist-get config :setup)
-        (workset-worktree-run-scripts (plist-get config :setup) wt-path "setup")))
-    (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
-      (workset--put key
-                    (list :repo-root repo-root
-                          :worktree-path wt-path
-                          :branch branch
-                          :repo-name repo-name
-                          :task task
-                          :vterm-buffers (list buf)))
-      (message "Loaded workset %s" key))))
+    (let ((wt-path (workset-worktree-create repo-root local-branch)))
+      (let ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task)))
+        (workset--put key
+                      (list :repo-root repo-root
+                            :worktree-path wt-path
+                            :branch local-branch
+                            :repo-name repo-name
+                            :task task
+                            :vterm-buffers (list buf)))
+        (message "Loaded workset %s" key)))))
 
 ;;;; GitHub helpers
 

@@ -162,10 +162,8 @@ Each entry is a plist with :type, :key, :path, :repo-root,
               (unless (or (equal truepath repo-truename)
                           (gethash truepath seen))
                 (puthash truepath t seen)
-                (let* ((branch-ref (or (plist-get wt :branch) ""))
-                       (branch (replace-regexp-in-string
-                                "\\`refs/heads/" "" branch-ref))
-                       (key (or branch
+                (let* ((branch (or (plist-get wt :branch) ""))
+                       (key (or (and (not (string-empty-p branch)) branch)
                                 (file-name-nondirectory
                                  (directory-file-name path)))))
                   (push (list :type 'git-worktree
@@ -602,15 +600,16 @@ Use `workset-remove-repo' (R) to unregister a repo."
          ;; Optionally remove worktree
          (when (and (file-directory-p wt-path)
                     (yes-or-no-p (format "Also remove worktree at %s? " wt-path)))
-           (workset-worktree-remove repo-root wt-path))
+           (workset-worktree-remove repo-root (plist-get ws :branch)))
          (workset--remove key)
          (message "Removed workset %s" key)))
       ((or 'discovered 'git-worktree)
        (let ((path (plist-get entry :path))
+             (branch (plist-get entry :branch))
              (repo-root (plist-get entry :repo-root)))
          (unless (yes-or-no-p (format "Remove worktree at %s? " path))
            (user-error "Aborted"))
-         (workset-worktree-remove repo-root path)
+         (workset-worktree-remove repo-root branch)
          (message "Removed worktree %s" path)))
       (_
        (user-error "Unknown entry type: %s" type)))
