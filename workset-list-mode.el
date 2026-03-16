@@ -68,6 +68,16 @@
   "Face for terminal indicator when some terminals are busy."
   :group 'workset-list)
 
+(defface workset-list-symbols
+  '((t :inherit font-lock-type-face))
+  "Face for wt status symbols."
+  :group 'workset-list)
+
+(defface workset-list-branch-only
+  '((t :inherit shadow :slant italic))
+  "Face for branches without worktrees."
+  :group 'workset-list)
+
 ;;;; Forward declarations
 
 (defvar workset--active-worksets)
@@ -357,31 +367,39 @@ Returns empty string when count is 0."
 (defun workset-list--insert-entry (entry last-p)
   "Insert a single worktree ENTRY line.  LAST-P non-nil for the last entry."
   (let* ((key (or (plist-get entry :key) ""))
-         (branch (or (plist-get entry :branch) ""))
-         (path (abbreviate-file-name (or (plist-get entry :path) "")))
+         (path (plist-get entry :path))
          (status (or (plist-get entry :status) ""))
+         (symbols (or (plist-get entry :symbols) ""))
+         (main-state (or (plist-get entry :main-state) ""))
+         (sha (or (plist-get entry :commit-short-sha) ""))
+         (is-branch-only (eq (plist-get entry :type) 'wt-branch))
          (connector (if last-p "└── " "├── "))
          (stale-p (string= status "stale"))
-         (name-face (if stale-p 'workset-list-stale 'workset-list-key))
-         ;; Derive a short display name from the key
+         (name-face (cond (stale-p 'workset-list-stale)
+                          (is-branch-only 'workset-list-branch-only)
+                          (t 'workset-list-key)))
          (display-name (file-name-nondirectory (directory-file-name key)))
          (beg (point)))
     (let ((term-indicator
-           (let ((bufs (workset-list--entry-vterm-buffers entry)))
-             (if bufs
-                 (workset-list--format-terminal-indicator
-                  (workset-list--vterm-status bufs))
-               ""))))
+           (if is-branch-only ""
+             (let ((bufs (workset-list--entry-vterm-buffers entry)))
+               (if bufs
+                   (workset-list--format-terminal-indicator
+                    (workset-list--vterm-status bufs))
+                 "")))))
       (insert (propertize "│ " 'face 'workset-list-border)
               (propertize connector 'face 'workset-list-border)
-              (propertize (workset-list--pad display-name 25) 'face name-face)
+              (propertize (workset-list--pad display-name 22) 'face name-face)
               " "
-              (propertize (workset-list--pad status 12) 'face 'workset-list-type)
-              (propertize (workset-list--pad branch 30) 'face 'workset-list-branch)
-              (propertize path 'face 'workset-list-path)
+              (propertize (workset-list--pad symbols 6) 'face 'workset-list-symbols)
+              " "
+              (propertize (workset-list--pad main-state 12) 'face 'workset-list-type)
+              (propertize (workset-list--pad sha 9) 'face 'workset-list-type)
+              (if (and path (not (string-empty-p path)))
+                  (propertize (abbreviate-file-name path) 'face 'workset-list-path)
+                (propertize "(no worktree)" 'face 'shadow))
               term-indicator
               "\n"))
-    ;; Store the entry plist as a text property on the line
     (put-text-property beg (point) 'workset-entry entry)))
 
 (defun workset-list--insert-repo-solo (repo-name entries)
