@@ -437,8 +437,7 @@ worktree's relative path under its base directory."
     ;; Optionally remove worktree
     (when (and (file-directory-p wt-path)
                (yes-or-no-p (format "Also remove worktree at %s? " wt-path)))
-      (let ((branch (plist-get ws :branch)))
-        (workset-worktree-remove repo-root branch)))
+      (workset-worktree-remove repo-root branch))
     (workset--remove key)
     (message "Removed workset %s" key)))
 
