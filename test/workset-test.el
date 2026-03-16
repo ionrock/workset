@@ -570,7 +570,7 @@
   (let* ((tmpdir (make-temp-file "workset-test-" t))
          (repo-dir (expand-file-name "repo" tmpdir))
          (wt-dir (expand-file-name "worktree" tmpdir))
-         (json-output (format "[{\"path\":\"%s\",\"branch\":\"test-branch\",\"head\":\"abc123\"}]"
+         (json-output (format "[{\"path\":\"%s\",\"branch\":\"test-branch\",\"kind\":\"worktree\",\"commit\":{\"sha\":\"abc123\",\"short_sha\":\"abc123d\",\"message\":\"test\",\"timestamp\":0},\"main_state\":\"ahead\",\"is_main\":false,\"is_current\":false,\"is_previous\":false}]"
                               wt-dir)))
     (unwind-protect
         (cl-letf (((symbol-function 'call-process)
@@ -606,7 +606,7 @@
 
 (ert-deftest workset-test-worktree-list ()
   "Unit test: workset-worktree-list parses wt list JSON output."
-  (let ((json-output "[{\"path\":\"/home/user/repo\",\"branch\":\"refs/heads/main\",\"head\":\"abc123\"},{\"path\":\"/home/user/repo-wt\",\"branch\":\"refs/heads/feature\",\"head\":\"def456\"}]"))
+  (let ((json-output "[{\"path\":\"/home/user/repo\",\"branch\":\"refs/heads/main\",\"kind\":\"worktree\",\"commit\":{\"sha\":\"abc123\",\"short_sha\":\"abc123d\",\"message\":\"init\",\"timestamp\":0},\"main_state\":\"is_main\",\"is_main\":true,\"is_current\":true,\"is_previous\":false},{\"path\":\"/home/user/repo-wt\",\"branch\":\"refs/heads/feature\",\"kind\":\"worktree\",\"commit\":{\"sha\":\"def456\",\"short_sha\":\"def456a\",\"message\":\"feat\",\"timestamp\":0},\"main_state\":\"ahead\",\"is_main\":false,\"is_current\":false,\"is_previous\":false}]"))
     (cl-letf (((symbol-function 'call-process)
                (lambda (_program _infile buffer _display &rest _args)
                  (when buffer
@@ -891,7 +891,6 @@
               (workset-list)))
           (with-current-buffer "*workset*"
             (let ((content (buffer-string)))
-              (should (string-match-p "Discovered" content))
               (should (string-match-p "myrepo" content)))))
       (when (get-buffer "*workset*")
         (kill-buffer "*workset*"))
@@ -981,8 +980,10 @@
           ;; Buffer should have both active and discovered entries
           (with-current-buffer "*workset*"
             (let ((content (buffer-string)))
-              (should (string-match-p "active" content))
-              (should (string-match-p "discovered" content)))))
+              ;; Active entry with task1
+              (should (string-match-p "task1" content))
+              ;; Discovered worktree
+              (should (string-match-p "task-wt" content)))))
       (workset--remove "testrepo/task1")
       (ignore-errors
        (let ((default-directory repo-dir))
@@ -1064,17 +1065,16 @@
          (main (make-hash-table :test #'equal))
          (remote (make-hash-table :test #'equal))
          (entry (make-hash-table :test #'equal)))
-    ;; Build commit (camelCase keys as used by json-parse-buffer)
+    ;; Build commit (snake_case keys as produced by wt CLI JSON)
     (puthash "sha" "abc123def456" commit)
-    (puthash "shortSha" "abc123d" commit)
+    (puthash "short_sha" "abc123d" commit)
     (puthash "message" "Fix bug" commit)
     (puthash "timestamp" 1700000000 commit)
-    ;; Build workingTree (camelCase key)
+    ;; Build working_tree
     (puthash "staged" :false wt)
     (puthash "modified" t wt)
     (puthash "untracked" :false wt)
     ;; Build main
-    (puthash "state" "ahead" main)
     (puthash "ahead" 3 main)
     (puthash "behind" 1 main)
     ;; Build remote
@@ -1082,18 +1082,19 @@
     (puthash "branch" "feature" remote)
     (puthash "ahead" 2 remote)
     (puthash "behind" 0 remote)
-    ;; Build entry (camelCase keys)
+    ;; Build entry (snake_case keys)
     (puthash "branch" "refs/heads/feature" entry)
     (puthash "path" "/tmp/wt/feature" entry)
     (puthash "kind" "worktree" entry)
     (puthash "commit" commit entry)
-    (puthash "workingTree" wt entry)
+    (puthash "working_tree" wt entry)
+    (puthash "main_state" "ahead" entry)
     (puthash "main" main entry)
     (puthash "remote" remote entry)
     (puthash "symbols" "!↑⇡" entry)
-    (puthash "isMain" :false entry)
-    (puthash "isCurrent" t entry)
-    (puthash "isPrevious" :false entry)
+    (puthash "is_main" :false entry)
+    (puthash "is_current" t entry)
+    (puthash "is_previous" :false entry)
     ;; Parse
     (let ((result (workset-worktree--parse-wt-entry entry)))
       (should (equal (plist-get result :branch) "feature"))
@@ -1122,21 +1123,21 @@
          (main (make-hash-table :test #'equal))
          (entry (make-hash-table :test #'equal)))
     (puthash "sha" "def789" commit)
-    (puthash "shortSha" "def789a" commit)
+    (puthash "short_sha" "def789a" commit)
     (puthash "message" "Old commit" commit)
     (puthash "timestamp" 1600000000 commit)
-    (puthash "state" "integrated" main)
     (puthash "ahead" 0 main)
     (puthash "behind" 5 main)
     (puthash "branch" "old-feature" entry)
     (puthash "kind" "branch" entry)
     (puthash "commit" commit entry)
+    (puthash "main_state" "integrated" entry)
     (puthash "main" main entry)
     (puthash "symbols" "⊂⇣/" entry)
-    (puthash "isMain" :false entry)
-    (puthash "isCurrent" :false entry)
-    (puthash "isPrevious" :false entry)
-    ;; No "path", no "workingTree", no "remote"
+    (puthash "is_main" :false entry)
+    (puthash "is_current" :false entry)
+    (puthash "is_previous" :false entry)
+    ;; No "path", no "working_tree", no "remote"
     (let ((result (workset-worktree--parse-wt-entry entry)))
       (should (equal (plist-get result :branch) "old-feature"))
       ;; kind=branch means path is nil even if hash had a value

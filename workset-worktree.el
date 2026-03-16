@@ -64,11 +64,11 @@ Returns a flat plist with keys:
           :path              path
           :kind              kind
           :commit-sha        (when commit (gethash "sha" commit))
-          :commit-short-sha  (when commit (gethash "shortSha" commit))
+          :commit-short-sha  (when commit (gethash "short_sha" commit))
           :commit-message    (when commit (gethash "message" commit))
           :commit-timestamp  (when commit (gethash "timestamp" commit))
-          :working-tree      (gethash "workingTree" entry)
-          :main-state        (when main (gethash "state" main))
+          :working-tree      (gethash "working_tree" entry)
+          :main-state        (gethash "main_state" entry)
           :main-ahead        (when main (gethash "ahead" main))
           :main-behind       (when main (gethash "behind" main))
           :remote-name       (when remote (gethash "name" remote))
@@ -76,9 +76,9 @@ Returns a flat plist with keys:
           :remote-ahead      (when remote (gethash "ahead" remote))
           :remote-behind     (when remote (gethash "behind" remote))
           :symbols           (gethash "symbols" entry)
-          :is-main           (gethash "isMain" entry)
-          :is-current        (gethash "isCurrent" entry)
-          :is-previous       (gethash "isPrevious" entry))))
+          :is-main           (gethash "is_main" entry)
+          :is-current        (gethash "is_current" entry)
+          :is-previous       (gethash "is_previous" entry))))
 
 (defun workset-worktree-list-full (repo-root &optional include-branches)
   "List all wt entries for REPO-ROOT with full metadata.
