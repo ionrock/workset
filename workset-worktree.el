@@ -72,23 +72,6 @@ Branch values are bare names with no refs/heads/ prefix."
         (error
          (error "Failed to parse wt list JSON output: %s" (error-message-string err)))))))
 
-(defun workset-worktree--parse-porcelain (output)
-  "Parse porcelain OUTPUT from `git worktree list' into plists."
-  (let ((entries nil)
-        (current nil))
-    (dolist (line (split-string output "\n" t))
-      (cond
-       ((string-prefix-p "worktree " line)
-        (when current
-          (push current entries))
-        (setq current (list :path (substring line 9))))
-       ((string-prefix-p "HEAD " line)
-        (setq current (plist-put current :head (substring line 5))))
-       ((string-prefix-p "branch " line)
-        (setq current (plist-put current :branch (substring line 7))))))
-    (when current
-      (push current entries))
-    (nreverse entries)))
 
 (defun workset-worktree-list-branches (repo-root)
   "Return a deduplicated list of branch names for REPO-ROOT.

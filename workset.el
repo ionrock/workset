@@ -145,26 +145,6 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
   (list (expand-file-name "worktrees" workset-base-directory)
         (expand-file-name "worktrees" workset-superset-directory)))
 
-(defun workset--worktree-directory (repo-name task)
-  "Return the worktree directory for REPO-NAME and TASK.
-When `workset-create-directory' is `superset', the path is
-SUPERSET/worktrees/[ORG/][OWNER/]TASK, omitting ORG or OWNER levels
-when their defcustoms are empty strings.
-When `workset-create-directory' is `workset', the path is
-BASE/worktrees/REPO/TASK."
-  (if (eq workset-create-directory 'superset)
-      (let* ((segments (list "worktrees"))
-             (segments (if (string-empty-p workset-default-organization)
-                           segments
-                         (append segments (list workset-default-organization))))
-             (segments (if (string-empty-p workset-default-owner)
-                           segments
-                         (append segments (list workset-default-owner))))
-             (segments (append segments (list task)))
-             (rel-path (mapconcat #'identity segments "/")))
-        (expand-file-name rel-path workset-superset-directory))
-    (expand-file-name (concat "worktrees/" repo-name "/" task)
-                      workset-base-directory)))
 
 (defun workset--key (repo-name task)
   "Return the workset key for REPO-NAME and TASK."

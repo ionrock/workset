@@ -26,49 +26,6 @@
   (should (equal (workset--repo-name "/repo")
                  "repo")))
 
-(ert-deftest workset-test-worktree-directory ()
-  "Test worktree directory construction in workset mode."
-  (let ((workset-base-directory "/tmp/workset-test-base")
-        (workset-create-directory 'workset))
-    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
-                   "/tmp/workset-test-base/worktrees/myrepo/fix-bug"))))
-
-(ert-deftest workset-test-worktree-directory-superset-bare ()
-  "Test worktree directory construction in superset mode with no org/owner."
-  (let ((workset-superset-directory "/tmp/superset")
-        (workset-create-directory 'superset)
-        (workset-default-organization "")
-        (workset-default-owner ""))
-    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
-                   "/tmp/superset/worktrees/fix-bug"))))
-
-(ert-deftest workset-test-worktree-directory-superset-with-owner ()
-  "Test worktree directory construction in superset mode with owner only."
-  (let ((workset-superset-directory "/tmp/superset")
-        (workset-create-directory 'superset)
-        (workset-default-organization "")
-        (workset-default-owner "eric-larson"))
-    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
-                   "/tmp/superset/worktrees/eric-larson/fix-bug"))))
-
-(ert-deftest workset-test-worktree-directory-superset-with-org-and-owner ()
-  "Test worktree directory construction in superset mode with org and owner."
-  (let ((workset-superset-directory "/tmp/superset")
-        (workset-create-directory 'superset)
-        (workset-default-organization "internal")
-        (workset-default-owner "eric-larson"))
-    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
-                   "/tmp/superset/worktrees/internal/eric-larson/fix-bug"))))
-
-(ert-deftest workset-test-worktree-directory-superset-with-org-only ()
-  "Test worktree directory construction in superset mode with org only."
-  (let ((workset-superset-directory "/tmp/superset")
-        (workset-create-directory 'superset)
-        (workset-default-organization "internal")
-        (workset-default-owner ""))
-    (should (equal (workset--worktree-directory "myrepo" "fix-bug")
-                   "/tmp/superset/worktrees/internal/fix-bug"))))
-
 (ert-deftest workset-test-discovery-directories ()
   "Test that discovery directories includes both base and superset worktree dirs."
   (let ((workset-base-directory "/tmp/base")
@@ -605,19 +562,6 @@
     (should (eq (workset-project--backend) 'project)))
   (let ((workset-project-backend 'projectile))
     (should (eq (workset-project--backend) 'projectile))))
-
-;;;; Worktree helper tests
-
-(ert-deftest workset-test-parse-porcelain ()
-  "Test parsing git worktree list --porcelain output."
-  (let ((output "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /home/user/repo-wt\nHEAD def456\nbranch refs/heads/feature\n"))
-    (let ((result (workset-worktree--parse-porcelain output)))
-      (should (= (length result) 2))
-      (should (equal (plist-get (car result) :path) "/home/user/repo"))
-      (should (equal (plist-get (car result) :head) "abc123"))
-      (should (equal (plist-get (car result) :branch) "refs/heads/main"))
-      (should (equal (plist-get (cadr result) :path) "/home/user/repo-wt"))
-      (should (equal (plist-get (cadr result) :branch) "refs/heads/feature")))))
 
 ;;;; Integration tests — require temp git repo
 
