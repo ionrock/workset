@@ -88,6 +88,7 @@
 
 (defvar vterm--prompt-tracking-enabled-p)
 (declare-function workset-worktree-list "workset-worktree")
+(declare-function workset-worktree-list-full "workset-worktree")
 (declare-function workset-worktree-discover-in-directory "workset-worktree")
 (declare-function workset-worktree-remove "workset-worktree")
 (declare-function workset-create "workset")
@@ -106,6 +107,7 @@ Returns an alist of (REPO-NAME . ENTRIES) sorted by repo name.
 Each entry is a plist with :type, :key, :path, :repo-root,
 :repo-name, :branch, and :status."
   (let ((seen (make-hash-table :test #'equal))
+        (wt-by-truepath (make-hash-table :test #'equal))
         (entries nil))
     ;; 1. Active worksets
     (dolist (key (workset--active-keys))
@@ -153,27 +155,82 @@ Each entry is a plist with :type, :key, :path, :repo-root,
     ;; 3. Worktrees from registered repos
     (dolist (repo-root workset-repos)
       (when (file-directory-p repo-root)
-        (let ((repo-truename (file-truename repo-root))
-              (repo-name (workset--repo-name repo-root)))
-          (dolist (wt (workset-worktree-list repo-root))
-            (let* ((path (plist-get wt :path))
-                   (truepath (file-truename path)))
+        (let ((repo-name (workset--repo-name repo-root)))
+          (dolist (wt (workset-worktree-list-full repo-root t))
+            (let* ((is-main (plist-get wt :is-main))
+                   (kind (plist-get wt :kind))
+                   (path (plist-get wt :path))
+                   (branch (or (plist-get wt :branch) "")))
               ;; Skip main worktree
-              (unless (or (equal truepath repo-truename)
-                          (gethash truepath seen))
-                (puthash truepath t seen)
-                (let* ((branch (or (plist-get wt :branch) ""))
-                       (key (or (and (not (string-empty-p branch)) branch)
-                                (file-name-nondirectory
-                                 (directory-file-name path)))))
-                  (push (list :type 'git-worktree
-                              :key key
-                              :path path
-                              :repo-root repo-root
-                              :repo-name (or repo-name "")
-                              :branch branch
-                              :status "worktree")
-                        entries))))))))
+              (unless is-main
+                (if (equal kind "branch")
+                    ;; Branch-only entry (no worktree on disk)
+                    (let ((dedup-key (concat repo-name "/" branch)))
+                      (unless (gethash dedup-key seen)
+                        (puthash dedup-key t seen)
+                        (push (list :type 'wt-branch
+                                    :key branch
+                                    :path ""
+                                    :repo-root repo-root
+                                    :repo-name (or repo-name "")
+                                    :branch branch
+                                    :status "branch"
+                                    :symbols (plist-get wt :symbols)
+                                    :main-state (plist-get wt :main-state)
+                                    :main-ahead (plist-get wt :main-ahead)
+                                    :main-behind (plist-get wt :main-behind)
+                                    :remote-ahead (plist-get wt :remote-ahead)
+                                    :remote-behind (plist-get wt :remote-behind)
+                                    :commit-short-sha (plist-get wt :commit-short-sha)
+                                    :commit-message (plist-get wt :commit-message)
+                                    :working-tree (plist-get wt :working-tree)
+                                    :is-current (plist-get wt :is-current)
+                                    :kind kind)
+                              entries)))
+                  ;; Worktree entry (has a path on disk)
+                  (let ((truepath (when path (file-truename path))))
+                    (unless (or (null truepath) (gethash truepath seen))
+                      (puthash truepath t seen)
+                      (puthash truepath wt wt-by-truepath)
+                      (let ((key (or (and (not (string-empty-p branch)) branch)
+                                     (file-name-nondirectory
+                                      (directory-file-name path)))))
+                        (push (list :type 'git-worktree
+                                    :key key
+                                    :path (or path "")
+                                    :repo-root repo-root
+                                    :repo-name (or repo-name "")
+                                    :branch branch
+                                    :status "worktree"
+                                    :symbols (plist-get wt :symbols)
+                                    :main-state (plist-get wt :main-state)
+                                    :main-ahead (plist-get wt :main-ahead)
+                                    :main-behind (plist-get wt :main-behind)
+                                    :remote-ahead (plist-get wt :remote-ahead)
+                                    :remote-behind (plist-get wt :remote-behind)
+                                    :commit-short-sha (plist-get wt :commit-short-sha)
+                                    :commit-message (plist-get wt :commit-message)
+                                    :working-tree (plist-get wt :working-tree)
+                                    :is-current (plist-get wt :is-current)
+                                    :kind kind)
+                              entries)))))))))))
+    ;; Enrich active entries with wt metadata
+    (dolist (entry entries)
+      (when (and (eq (plist-get entry :type) 'active)
+                 (not (plist-get entry :symbols)))
+        (let* ((path (plist-get entry :path))
+               (tp (when (and path (not (string-empty-p path)))
+                     (file-truename path)))
+               (wt-data (when tp (gethash tp wt-by-truepath))))
+          (when wt-data
+            (plist-put entry :symbols (plist-get wt-data :symbols))
+            (plist-put entry :main-state (plist-get wt-data :main-state))
+            (plist-put entry :main-ahead (plist-get wt-data :main-ahead))
+            (plist-put entry :main-behind (plist-get wt-data :main-behind))
+            (plist-put entry :remote-ahead (plist-get wt-data :remote-ahead))
+            (plist-put entry :remote-behind (plist-get wt-data :remote-behind))
+            (plist-put entry :commit-short-sha (plist-get wt-data :commit-short-sha))
+            (plist-put entry :commit-message (plist-get wt-data :commit-message))))))
     ;; Group by repo-name
     (let ((groups (make-hash-table :test #'equal)))
       (dolist (entry (nreverse entries))
