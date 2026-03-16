@@ -602,7 +602,7 @@ Use `workset-remove-repo' (R) to unregister a repo."
          ;; Optionally remove worktree
          (when (and (file-directory-p wt-path)
                     (yes-or-no-p (format "Also remove worktree at %s? " wt-path)))
-           (workset-worktree-remove repo-root wt-path))
+           (workset-worktree-remove repo-root (plist-get ws :branch)))
          (workset--remove key)
          (message "Removed workset %s" key)))
       ((or 'discovered 'git-worktree)
@@ -610,7 +610,7 @@ Use `workset-remove-repo' (R) to unregister a repo."
              (repo-root (plist-get entry :repo-root)))
          (unless (yes-or-no-p (format "Remove worktree at %s? " path))
            (user-error "Aborted"))
-         (workset-worktree-remove repo-root path)
+         (workset-worktree-remove repo-root (plist-get entry :branch))
          (message "Removed worktree %s" path)))
       (_
        (user-error "Unknown entry type: %s" type)))
