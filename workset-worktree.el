@@ -14,6 +14,53 @@
 
 (require 'cl-lib)
 
+(defcustom workset-process-timeout 30
+  "Timeout in seconds for external process calls (wt, git, gh).
+Set to nil to disable the timeout."
+  :type '(choice (integer :tag "Seconds")
+                 (const :tag "No timeout" nil))
+  :group 'workset)
+
+(defun workset--call-process (program buffer &rest args)
+  "Run PROGRAM with ARGS, inserting stdout into BUFFER.
+BUFFER follows `call-process' convention: t means current buffer,
+nil means discard.  Stderr is always discarded.
+Respects `workset-process-timeout'; signals an error on timeout."
+  (if (null workset-process-timeout)
+      ;; No timeout — use synchronous call
+      (apply #'call-process program nil
+             (if buffer '(t nil) nil) nil args)
+    ;; Async process with timeout so Emacs stays responsive
+    (let* ((stderr-buf (generate-new-buffer " *workset-stderr*"))
+           (out-buf (if (eq buffer t) (current-buffer) buffer))
+           (proc (make-process
+                  :name "workset-proc"
+                  :buffer out-buf
+                  :stderr stderr-buf
+                  :command (cons program args)
+                  :connection-type 'pipe
+                  :sentinel #'ignore))
+           (deadline (+ (float-time) workset-process-timeout)))
+      (unwind-protect
+          (progn
+            (while (and (process-live-p proc)
+                        (< (float-time) deadline))
+              (accept-process-output proc 0.1))
+            (when (process-live-p proc)
+              (kill-process proc)
+              ;; Wait briefly for process to die before signaling
+              (accept-process-output proc 0.1)
+              (error "%s timed out after %ds in %s"
+                     program workset-process-timeout default-directory))
+            (process-exit-status proc))
+        ;; Clean up stderr buffer without prompting
+        (when (buffer-live-p stderr-buf)
+          (let ((stderr-proc (get-buffer-process stderr-buf)))
+            (when (and stderr-proc (process-live-p stderr-proc))
+              (delete-process stderr-proc)))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer stderr-buf)))))))
+
 (defun workset-worktree-create (repo-root branch)
   "Create a worktree for BRANCH from REPO-ROOT using wt CLI.
 Calls `wt switch -c BRANCH --no-cd -y' from REPO-ROOT, then resolves
@@ -89,16 +136,19 @@ Returns a list of plists as produced by `workset-worktree--parse-wt-entry'."
     (with-temp-buffer
       (let* ((args (append '("list" "--format=json")
                            (when include-branches '("--branches"))))
-             (exit-code (apply #'call-process "wt" nil t nil args)))
+             (exit-code (apply #'workset--call-process "wt" t args)))
         (unless (zerop exit-code)
-          (error "Wt list --format=json failed (exit %d)" exit-code)))
+          (error "Wt list --format=json failed (exit %d): %s"
+                 exit-code (string-trim (buffer-string)))))
       (goto-char (point-min))
       (condition-case err
           (let ((json (json-parse-buffer :object-type 'hash-table
                                          :array-type 'list)))
             (mapcar #'workset-worktree--parse-wt-entry json))
         (error
-         (error "Failed to parse wt list JSON output: %s" (error-message-string err)))))))
+         (error "Failed to parse wt list JSON output: %s\nBuffer contents: %s"
+                (error-message-string err)
+                (string-trim (buffer-string))))))))
 
 (defun workset-worktree-list (repo-root)
   "List git worktrees for REPO-ROOT using wt CLI.
@@ -121,7 +171,7 @@ Runs `git branch --all --format=%(refname:short)' and strips
 remote prefixes for deduplication."
   (let ((default-directory repo-root))
     (with-temp-buffer
-      (let ((exit-code (call-process "git" nil t nil
+      (let ((exit-code (workset--call-process "git" t
                                      "branch" "--all"
                                      "--format=%(refname:short)")))
         (unless (zerop exit-code)
@@ -222,10 +272,10 @@ Returns non-nil on success, signals an error on failure."
         (with-temp-buffer
           (let* ((args (append '("merge" "-y")
                                (when target (list target))))
-                 (exit-code (apply #'call-process "wt" nil t nil args)))
+                 (exit-code (apply #'workset--call-process "wt" t args)))
             (unless (zerop exit-code)
               (error "Wt merge failed for branch %s: %s"
-                     branch (buffer-string)))
+                     branch (string-trim (buffer-string))))
             t))))))
 
 (provide 'workset-worktree)

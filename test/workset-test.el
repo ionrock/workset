@@ -567,7 +567,8 @@
 
 (ert-deftest workset-test-worktree-create ()
   "Unit test: workset-worktree-create stubs wt CLI calls."
-  (let* ((tmpdir (make-temp-file "workset-test-" t))
+  (let* ((workset-process-timeout nil)
+         (tmpdir (make-temp-file "workset-test-" t))
          (repo-dir (expand-file-name "repo" tmpdir))
          (wt-dir (expand-file-name "worktree" tmpdir))
          (json-output (format "[{\"path\":\"%s\",\"branch\":\"test-branch\",\"kind\":\"worktree\",\"commit\":{\"sha\":\"abc123\",\"short_sha\":\"abc123d\",\"message\":\"test\",\"timestamp\":0},\"main_state\":\"ahead\",\"is_main\":false,\"is_current\":false,\"is_previous\":false}]"
@@ -582,7 +583,7 @@
                       ((and (equal program "wt")
                             (equal (car args) "list"))
                        (when buffer
-                         (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                         (with-current-buffer (if (or (eq buffer t) (and (consp buffer) (eq (car buffer) t))) (current-buffer) buffer)
                            (insert json-output)))
                        0)
                       (t 0)))))
@@ -606,11 +607,12 @@
 
 (ert-deftest workset-test-worktree-list ()
   "Unit test: workset-worktree-list parses wt list JSON output."
-  (let ((json-output "[{\"path\":\"/home/user/repo\",\"branch\":\"refs/heads/main\",\"kind\":\"worktree\",\"commit\":{\"sha\":\"abc123\",\"short_sha\":\"abc123d\",\"message\":\"init\",\"timestamp\":0},\"main_state\":\"is_main\",\"is_main\":true,\"is_current\":true,\"is_previous\":false},{\"path\":\"/home/user/repo-wt\",\"branch\":\"refs/heads/feature\",\"kind\":\"worktree\",\"commit\":{\"sha\":\"def456\",\"short_sha\":\"def456a\",\"message\":\"feat\",\"timestamp\":0},\"main_state\":\"ahead\",\"is_main\":false,\"is_current\":false,\"is_previous\":false}]"))
+  (let ((workset-process-timeout nil)
+        (json-output "[{\"path\":\"/home/user/repo\",\"branch\":\"refs/heads/main\",\"kind\":\"worktree\",\"commit\":{\"sha\":\"abc123\",\"short_sha\":\"abc123d\",\"message\":\"init\",\"timestamp\":0},\"main_state\":\"is_main\",\"is_main\":true,\"is_current\":true,\"is_previous\":false},{\"path\":\"/home/user/repo-wt\",\"branch\":\"refs/heads/feature\",\"kind\":\"worktree\",\"commit\":{\"sha\":\"def456\",\"short_sha\":\"def456a\",\"message\":\"feat\",\"timestamp\":0},\"main_state\":\"ahead\",\"is_main\":false,\"is_current\":false,\"is_previous\":false}]"))
     (cl-letf (((symbol-function 'call-process)
                (lambda (_program _infile buffer _display &rest _args)
                  (when buffer
-                   (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                   (with-current-buffer (if (or (eq buffer t) (and (consp buffer) (eq (car buffer) t))) (current-buffer) buffer)
                      (insert json-output)))
                  0)))
       (let ((result (workset-worktree-list "/fake/repo")))
@@ -641,29 +643,31 @@
 
 (ert-deftest workset-test-gh-list-prs-parse ()
   "Test PR list parsing with stubbed call-process."
-  (cl-letf (((symbol-function 'call-process)
-             (lambda (_program _infile buffer &rest _args)
-               (when buffer
-                 (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
-                   (insert "42\tFix login bug\n7\tAdd dark mode\n")))
-               0)))
-    (let ((result (workset--gh-list-prs "/tmp/fake-repo")))
-      (should (equal (length result) 2))
-      (should (equal (car (nth 0 result)) "#42: Fix login bug"))
-      (should (equal (cdr (nth 0 result)) "42"))
-      (should (equal (car (nth 1 result)) "#7: Add dark mode"))
-      (should (equal (cdr (nth 1 result)) "7")))))
+  (let ((workset-process-timeout nil))
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (_program _infile buffer &rest _args)
+                 (when buffer
+                   (with-current-buffer (if (or (eq buffer t) (and (consp buffer) (eq (car buffer) t))) (current-buffer) buffer)
+                     (insert "42\tFix login bug\n7\tAdd dark mode\n")))
+                 0)))
+      (let ((result (workset--gh-list-prs "/tmp/fake-repo")))
+        (should (equal (length result) 2))
+        (should (equal (car (nth 0 result)) "#42: Fix login bug"))
+        (should (equal (cdr (nth 0 result)) "42"))
+        (should (equal (car (nth 1 result)) "#7: Add dark mode"))
+        (should (equal (cdr (nth 1 result)) "7"))))))
 
 (ert-deftest workset-test-gh-pr-branch ()
   "Test PR branch lookup with stubbed call-process."
-  (cl-letf (((symbol-function 'call-process)
-             (lambda (_program _infile buffer &rest _args)
-               (when buffer
-                 (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
-                   (insert "feature/cool-thing\n")))
-               0)))
-    (should (equal (workset--gh-pr-branch "/tmp/fake-repo" "42")
-                   "feature/cool-thing"))))
+  (let ((workset-process-timeout nil))
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (_program _infile buffer &rest _args)
+                 (when buffer
+                   (with-current-buffer (if (or (eq buffer t) (and (consp buffer) (eq (car buffer) t))) (current-buffer) buffer)
+                     (insert "feature/cool-thing\n")))
+                 0)))
+      (should (equal (workset--gh-pr-branch "/tmp/fake-repo" "42")
+                     "feature/cool-thing")))))
 
 ;;;; Worktree discovery tests
 
@@ -1044,11 +1048,12 @@
 
 (ert-deftest workset-test-worktree-list-bare-branch ()
   "Unit test: workset-worktree-list returns bare branch names without refs/heads/."
-  (let ((json-output "[{\"path\":\"/repo\",\"branch\":\"main\",\"head\":\"abc\"}]"))
+  (let ((workset-process-timeout nil)
+        (json-output "[{\"path\":\"/repo\",\"branch\":\"main\",\"head\":\"abc\"}]"))
     (cl-letf (((symbol-function 'call-process)
                (lambda (_program _infile buffer _display &rest _args)
                  (when buffer
-                   (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                   (with-current-buffer (if (or (eq buffer t) (and (consp buffer) (eq (car buffer) t))) (current-buffer) buffer)
                      (insert json-output)))
                  0)))
       (let ((result (workset-worktree-list "/repo")))

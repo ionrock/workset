@@ -168,7 +168,12 @@ Each entry is a plist with :type, :key, :path, :repo-root,
     (dolist (repo-root workset-repos)
       (when (file-directory-p repo-root)
         (let ((repo-name (workset--repo-name repo-root)))
-          (dolist (wt (workset-worktree-list-full repo-root t))
+          (dolist (wt (condition-case err
+                          (workset-worktree-list-full repo-root t)
+                        (error
+                         (message "workset: skipping %s: %s"
+                                  repo-root (error-message-string err))
+                         nil)))
             (let* ((is-main (plist-get wt :is-main))
                    (kind (plist-get wt :kind))
                    (path (plist-get wt :path))

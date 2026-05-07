@@ -341,7 +341,7 @@ to the list, and persists via `customize-save-variable'."
   "Return the git repository root for `default-directory', or nil."
   (let ((default-directory default-directory))
     (with-temp-buffer
-      (when (zerop (call-process "git" nil t nil
+      (when (zerop (workset--call-process "git" t
                                  "rev-parse" "--show-toplevel"))
         (string-trim (buffer-string))))))
 
@@ -433,18 +433,23 @@ via `wt list --format=json'.  Returns the worktree path string."
       (unless (zerop exit-code)
         (error "Wt switch failed for branch %s in %s" branch repo-root)))
     (with-temp-buffer
-      (let ((exit-code (call-process "wt" nil t nil "list" "--format=json")))
+      (let ((exit-code (workset--call-process "wt" t "list" "--format=json")))
         (unless (zerop exit-code)
-          (error "Wt list failed in %s" repo-root))
+          (error "Wt list failed in %s: %s" repo-root (string-trim (buffer-string))))
         (goto-char (point-min))
-        (let* ((entries (json-parse-buffer :object-type 'hash-table
-                                           :array-type 'list))
-               (match (cl-find-if (lambda (entry)
-                                    (equal (gethash "branch" entry) branch))
-                                  entries)))
-          (unless match
-            (error "Could not find worktree for branch %s in wt list output" branch))
-          (gethash "path" match))))))
+        (condition-case err
+            (let* ((entries (json-parse-buffer :object-type 'hash-table
+                                               :array-type 'list))
+                   (match (cl-find-if (lambda (entry)
+                                        (equal (gethash "branch" entry) branch))
+                                      entries)))
+              (unless match
+                (error "Could not find worktree for branch %s in wt list output" branch))
+              (gethash "path" match))
+          (error
+           (error "Failed to parse wt list JSON in %s: %s\nBuffer contents: %s"
+                  repo-root (error-message-string err)
+                  (string-trim (buffer-string)))))))))
 
 (defun workset--load-branch (repo-root branch task)
   "Load BRANCH into a workset for REPO-ROOT with task name TASK.
@@ -478,7 +483,7 @@ Handles remote-tracking refs by deriving a local branch name."
 Returns an alist of (\"#N: title\" . \"N\")."
   (let ((default-directory repo-root))
     (with-temp-buffer
-      (let ((exit-code (call-process "gh" nil t nil
+      (let ((exit-code (workset--call-process "gh" t
                                      "pr" "list" "--state" "open"
                                      "--json" "number,title"
                                      "--jq" ".[] | \"\\(.number)\\t\\(.title)\"")))
@@ -496,7 +501,7 @@ Returns an alist of (\"#N: title\" . \"N\")."
   "Get the head branch name for PR-NUMBER in REPO-ROOT."
   (let ((default-directory repo-root))
     (with-temp-buffer
-      (let ((exit-code (call-process "gh" nil t nil
+      (let ((exit-code (workset--call-process "gh" t
                                      "pr" "view" pr-number
                                      "--json" "headRefName"
                                      "--jq" ".headRefName")))
