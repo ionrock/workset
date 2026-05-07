@@ -32,7 +32,8 @@ AI coding agents work best when each task has isolated state:
 ```elisp
 (use-package workset
   :straight (workset :type git :host github :repo "ionrock/workset")
-  :commands (workset workset-create workset-open workset-vterm workset-list workset-remove))
+  :commands (workset workset-create workset-open workset-vterm workset-vterm-here
+                   workset-switch-to-buffer workset-list workset-remove))
 ```
 
 ### Manual
@@ -144,7 +145,9 @@ so custom patterns are preserved.
 - `M-x workset` opens the transient menu
 - `M-x workset-create` creates a new workset
 - `M-x workset-open` switches to an existing workset
-- `M-x workset-vterm` opens an additional terminal
+- `M-x workset-vterm` opens an additional terminal for a selected active workset
+- `M-x workset-vterm-here` opens a new terminal for the current workset or repo directory
+- `M-x workset-switch-to-buffer` switches to a buffer associated with the current workset
 - `M-x workset-list` lists active worksets
 - `M-x workset-remove` removes a workset
 
@@ -156,6 +159,8 @@ Workset installs a global prefix map at `C-c w` by default.
 - `C-c w c` → `workset-create`
 - `C-c w o` → `workset-open`
 - `C-c w t` → `workset-vterm`
+- `C-c w x v` → `workset-vterm-here`
+- `C-c w x b` → `workset-switch-to-buffer`
 - `C-c w l` → `workset-list`
 - `C-c w r` → `workset-remove`
 

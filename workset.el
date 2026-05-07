@@ -22,6 +22,8 @@
 ;;   M-x workset-load-pr  - Load a GitHub PR into a workset
 ;;   M-x workset-open     - Switch to an existing workset
 ;;   M-x workset-vterm    - Open another terminal in a workset
+;;   M-x workset-vterm-here - Open a terminal for the current workset directory
+;;   M-x workset-switch-to-buffer - Switch to a buffer in the current workset
 ;;   M-x workset-list     - List active worksets
 ;;   M-x workset-remove   - Remove a workset
 
@@ -111,6 +113,9 @@ contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
 (defvar workset-prefix-map (make-sparse-keymap)
   "Keymap for Workset commands.")
 
+(defvar workset-x-map (make-sparse-keymap)
+  "Keymap for Workset project commands.")
+
 (defvar workset--keymap-installed nil
   "Key prefix currently used for `workset-prefix-map'.")
 
@@ -198,6 +203,87 @@ Prefers the stored :task, falls back to remainder of KEY after first /."
   "Return list of active workset keys."
   (mapcar #'car workset--active-worksets))
 
+(defun workset--directory-contains-p (directory file)
+  "Return non-nil if FILE is inside DIRECTORY.
+Both DIRECTORY and FILE may name files or directories.  Missing
+paths are compared by their expanded names instead of truenames."
+  (let* ((dir (file-name-as-directory (expand-file-name directory)))
+         (target (expand-file-name file))
+         (true-dir (if (file-exists-p dir) (file-truename dir) dir))
+         (true-target (if (file-exists-p target) (file-truename target) target)))
+    (file-in-directory-p true-target true-dir)))
+
+(defun workset--main-entry-for-repo (repo-root)
+  "Return a workset entry for the main worktree at REPO-ROOT."
+  (let* ((repo-name (workset--repo-name repo-root))
+         (key (workset--key repo-name "main")))
+    (cons key (list :repo-root repo-root
+                    :worktree-path repo-root
+                    :branch "main"
+                    :repo-name repo-name
+                    :task "main"))))
+
+(defun workset--merge-workset-entry (entry entries)
+  "Return ENTRIES with ENTRY added unless its key is already present."
+  (if (assoc (car entry) entries)
+      entries
+    (append entries (list entry))))
+
+(defun workset--workset-candidates (&optional repo-root)
+  "Return active and discoverable workset candidates.
+When REPO-ROOT is non-nil, include its main worktree and linked
+worktrees.  Also includes the main worktree for each path in
+`workset-repos' and worktrees discovered under configured workset
+storage directories."
+  (let ((entries nil))
+    (dolist (entry workset--active-worksets)
+      (setq entries (workset--merge-workset-entry entry entries)))
+    (when repo-root
+      (setq entries (workset--merge-workset-entry
+                     (workset--main-entry-for-repo repo-root) entries))
+      (dolist (entry (workset--discover-worktrees repo-root))
+        (setq entries (workset--merge-workset-entry entry entries))))
+    (dolist (repo workset-repos)
+      (when (file-directory-p repo)
+        (setq entries (workset--merge-workset-entry
+                       (workset--main-entry-for-repo repo) entries))))
+    (dolist (entry (workset--discover-all-worktrees))
+      (setq entries (workset--merge-workset-entry entry entries)))
+    entries))
+
+(defun workset--current-workset-entry ()
+  "Return the workset entry containing `default-directory', or nil.
+If multiple candidates contain `default-directory', prefer the one
+with the longest worktree path."
+  (let* ((repo-root (workset--git-repo-root))
+         (candidates (workset--workset-candidates repo-root))
+         (dir (expand-file-name default-directory))
+         (matches (cl-remove-if-not
+                   (lambda (entry)
+                     (when-let ((path (plist-get (cdr entry) :worktree-path)))
+                       (workset--directory-contains-p path dir)))
+                   candidates)))
+    (car (sort matches
+               (lambda (left right)
+                 (> (length (or (plist-get (cdr left) :worktree-path) ""))
+                    (length (or (plist-get (cdr right) :worktree-path) ""))))))))
+
+(defun workset--buffer-workset-directory (buffer)
+  "Return BUFFER's associated directory, or nil."
+  (with-current-buffer buffer
+    (cond
+     (buffer-file-name (file-name-directory buffer-file-name))
+     ((and default-directory (file-directory-p default-directory))
+      default-directory))))
+
+(defun workset--buffers-in-directory (directory)
+  "Return live buffers whose file or `default-directory' is under DIRECTORY."
+  (cl-remove-if-not
+   (lambda (buffer)
+     (when-let ((buffer-dir (workset--buffer-workset-directory buffer)))
+       (workset--directory-contains-p directory buffer-dir)))
+   (buffer-list)))
+
 ;;;; Sub-modules
 
 (require 'workset-project)
@@ -218,6 +304,9 @@ Prefers the stored :task, falls back to remainder of KEY after first /."
 (define-key workset-prefix-map (kbd "p") #'workset-load-pr)
 (define-key workset-prefix-map (kbd "a") #'workset-add-repo)
 (define-key workset-prefix-map (kbd "R") #'workset-remove-repo)
+(define-key workset-prefix-map (kbd "x") workset-x-map)
+(define-key workset-x-map (kbd "b") #'workset-switch-to-buffer)
+(define-key workset-x-map (kbd "v") #'workset-vterm-here)
 
 ;;;###autoload
 (defun workset-create (&optional repo-root)
@@ -248,14 +337,18 @@ When REPO-ROOT is non-nil, use it instead of prompting for a project."
 (defun workset-open ()
   "Switch to an existing workset's vterm, creating one if all are dead.
 Also discovers on-disk worktrees from both the current repo and all
-configured discovery directories."
+configured discovery directories.  Includes the main repo directory."
   (interactive)
   (let* ((active-keys (workset--active-keys))
          (repo-root (workset--git-repo-root))
          (repo-worktrees (workset--discover-worktrees repo-root))
          (all-worktrees (workset--discover-all-worktrees))
+         ;; Include main repo directory
+         (main-entry (when repo-root
+                       (workset--main-entry-for-repo repo-root)))
          ;; Merge both discovery sources, deduplicating by key
-         (disk-worktrees (append repo-worktrees
+         (disk-worktrees (append (when main-entry (list main-entry))
+                                 repo-worktrees
                                  (cl-remove-if (lambda (entry)
                                                  (assoc (car entry) repo-worktrees))
                                                all-worktrees)))
@@ -304,6 +397,50 @@ configured discovery directories."
            (bufs (append (plist-get ws :vterm-buffers) (list buf))))
       (setq ws (plist-put ws :vterm-buffers bufs))
       (workset--put key ws))))
+
+;;;###autoload
+(defun workset-vterm-here ()
+  "Create a new numbered vterm for the current workset directory.
+The current workset is inferred from `default-directory'.  This
+command does not create, switch, or otherwise manage git worktrees;
+when invoked from a normal repository directory it creates a vterm
+for that repository's main workset."
+  (interactive)
+  (let* ((entry (or (workset--current-workset-entry)
+                    (user-error "Current buffer is not in a workset or git repository")))
+         (key (car entry))
+         (ws (cdr entry))
+         (wt-path (plist-get ws :worktree-path))
+         (repo-name (workset--ws-repo-name key ws))
+         (task (workset--ws-task key ws)))
+    (unless (file-directory-p wt-path)
+      (workset--remove key)
+      (user-error "Workset directory %s no longer exists; workset removed" wt-path))
+    (let* ((buf (workset-vterm-create wt-path workset-vterm-buffer-name-format repo-name task))
+           (active-ws (or (workset--get key) ws))
+           (bufs (append (plist-get active-ws :vterm-buffers) (list buf))))
+      (setq active-ws (plist-put active-ws :vterm-buffers bufs))
+      (workset--put key active-ws))))
+
+;;;###autoload
+(defun workset-switch-to-buffer ()
+  "Switch to a buffer associated with the current workset directory.
+A related buffer is any live buffer whose file or `default-directory'
+is under the current workset's worktree path."
+  (interactive)
+  (let* ((entry (or (workset--current-workset-entry)
+                    (user-error "Current buffer is not in a workset or git repository")))
+         (ws (cdr entry))
+         (wt-path (plist-get ws :worktree-path))
+         (buffers (workset--buffers-in-directory wt-path)))
+    (unless buffers
+      (user-error "No buffers found for workset directory %s" wt-path))
+    (let* ((current (current-buffer))
+           (candidates (or (delq current (copy-sequence buffers)) buffers))
+           (names (mapcar #'buffer-name candidates))
+           (default (car names))
+           (choice (completing-read "Switch to workset buffer: " names nil t nil nil default)))
+      (switch-to-buffer choice))))
 
 ;;;###autoload
 (defun workset-list ()
@@ -692,6 +829,8 @@ Results are displayed in the *workset-migrate* buffer."
   ["Manage"
    ("l" "List worksets"   workset-list)
    ("t" "Open terminal"   workset-vterm)
+   ("b" "Switch buffer"   workset-switch-to-buffer)
+   ("v" "Vterm here"      workset-vterm-here)
    ("r" "Remove workset"  workset-remove)]
   ["Repos"
    ("a" "Add repo"        workset-add-repo)
