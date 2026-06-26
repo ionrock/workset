@@ -1,10 +1,10 @@
-;;; workset.el --- Coordinated git worktree + vterm workspaces  -*- lexical-binding: t; -*-
+;;; workset.el --- Coordinated git worktree + terminal workspaces  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Eric
 
 ;; Author: Eric
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (vterm "0.0.2") (transient "0.4.0"))
+;; Package-Requires: ((emacs "29.1") (transient "0.4.0"))
 ;; Keywords: tools, processes, vc
 ;; URL: https://github.com/eric/workset
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -12,7 +12,7 @@
 ;;; Commentary:
 
 ;; workset is a workflow tool for AI-assisted parallel development.
-;; It coordinates git worktrees, vterm sessions, and agent-friendly layouts
+;; It coordinates git worktrees, terminal sessions, and agent-friendly layouts
 ;; so each task gets an isolated branch, filesystem, and terminal.
 ;;
 ;; Usage:
@@ -40,7 +40,7 @@
 ;;;; Customization
 
 (defgroup workset nil
-  "Coordinated git worktree + vterm workspaces."
+  "Coordinated git worktree + terminal workspaces."
   :group 'tools
   :prefix "workset-")
 
@@ -86,8 +86,14 @@ SUPERSET/worktrees/[ORG/]OWNER/TASK.  Example: \"eric-larson\"."
                  (const :tag "Projectile" projectile))
   :group 'workset)
 
+(defcustom workset-terminal-backend 'vterm
+  "Terminal backend to use when creating workset terminals."
+  :type '(choice (const :tag "vterm" vterm)
+                 (const :tag "Ghostel" ghostel))
+  :group 'workset)
+
 (defcustom workset-vterm-buffer-name-format "*workset: %r/%t<%n>*"
-  "Format string for vterm buffer names.
+  "Format string for workset terminal buffer names.
 %r is replaced with the repo name, %t with the task name,
 and %n with the terminal number."
   :type 'string
@@ -108,7 +114,9 @@ and %n with the terminal number."
 (defvar workset--active-worksets nil
   "Alist of active worksets.
 Each entry is (KEY . PLIST) where KEY is \"repo/task\" and PLIST
-contains :repo-root, :worktree-path, :branch, :vterm-buffers.")
+contains :repo-root, :worktree-path, :branch, :vterm-buffers.
+The :vterm-buffers key stores workset terminal buffers for historical
+compatibility, regardless of the selected terminal backend.")
 
 (defvar workset-prefix-map (make-sparse-keymap)
   "Keymap for Workset commands.")
@@ -288,7 +296,7 @@ with the longest worktree path."
 
 (require 'workset-project)
 (require 'workset-worktree)
-(require 'workset-vterm)
+(require 'workset-terminal)
 (require 'workset-notify)
 (require 'workset-list-mode)
 
@@ -310,7 +318,7 @@ with the longest worktree path."
 
 ;;;###autoload
 (defun workset-create (&optional repo-root)
-  "Create a new workset: select project, name task, create worktree, open vterm.
+  "Create a new workset: select project, name task, create worktree, open terminal.
 When REPO-ROOT is non-nil, use it instead of prompting for a project."
   (interactive)
   (let* ((repo-root (or repo-root (workset-project-select)))
@@ -335,7 +343,7 @@ When REPO-ROOT is non-nil, use it instead of prompting for a project."
 
 ;;;###autoload
 (defun workset-open ()
-  "Switch to an existing workset's vterm, creating one if all are dead.
+  "Switch to an existing workset terminal, creating one if all are dead.
 Also discovers on-disk worktrees from both the current repo and all
 configured discovery directories.  Includes the main repo directory."
   (interactive)
@@ -400,10 +408,10 @@ configured discovery directories.  Includes the main repo directory."
 
 ;;;###autoload
 (defun workset-vterm-here ()
-  "Create a new numbered vterm for the current workset directory.
+  "Create a new numbered terminal for the current workset directory.
 The current workset is inferred from `default-directory'.  This
 command does not create, switch, or otherwise manage git worktrees;
-when invoked from a normal repository directory it creates a vterm
+when invoked from a normal repository directory it creates a terminal
 for that repository's main workset."
   (interactive)
   (let* ((entry (or (workset--current-workset-entry)
@@ -547,7 +555,7 @@ worktree's relative path under its base directory."
          (branch (plist-get ws :branch))
          (repo-name (workset--ws-repo-name key ws))
          (task (workset--ws-task key ws)))
-    ;; Kill vterm buffers
+    ;; Kill terminal buffers
     (dolist (buf (workset-vterm-list workset-vterm-buffer-name-format repo-name task))
       (when (buffer-live-p buf)
         (kill-buffer buf)))
@@ -830,7 +838,7 @@ Results are displayed in the *workset-migrate* buffer."
    ("l" "List worksets"   workset-list)
    ("t" "Open terminal"   workset-vterm)
    ("b" "Switch buffer"   workset-switch-to-buffer)
-   ("v" "Vterm here"      workset-vterm-here)
+   ("v" "Terminal here"   workset-vterm-here)
    ("r" "Remove workset"  workset-remove)]
   ["Repos"
    ("a" "Add repo"        workset-add-repo)

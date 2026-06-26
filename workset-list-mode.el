@@ -92,8 +92,8 @@
 (declare-function workset--repo-name "workset")
 (declare-function workset--put "workset")
 (declare-function workset--remove "workset")
-(declare-function workset-vterm-list "workset-vterm")
-(declare-function workset-vterm-create "workset-vterm")
+(declare-function workset-vterm-list "workset-terminal")
+(declare-function workset-vterm-create "workset-terminal")
 (declare-function vterm--at-prompt-p "vterm")
 
 (defvar vterm--prompt-tracking-enabled-p)

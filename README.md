@@ -5,7 +5,7 @@
 It coordinates:
 
 - Git worktrees (one task/branch per workspace)
-- `vterm` sessions (one terminal per workspace)
+- Terminal sessions (`vterm` by default, or Ghostel)
 - Agent-friendly layouts (fast context switching across tasks)
 
 ## Why workset
@@ -13,7 +13,7 @@ It coordinates:
 AI coding agents work best when each task has isolated state:
 
 - Separate branch and filesystem (`git worktree`)
-- Dedicated terminal process (`vterm`)
+- Dedicated terminal process (`vterm` by default, or Ghostel)
 - Repeatable task lifecycle (create, jump in, clean up)
 
 `workset` standardizes that loop so you can spin up multiple agent tasks without shell clutter or branch collisions.
@@ -52,6 +52,7 @@ AI coding agents work best when each task has isolated state:
       '(".env" ".envrc" ".env.local"
         "docker-compose.yml" "docker-compose.yaml"
         ".tool-versions" ".node-version" ".python-version" ".ruby-version"))
+(setq workset-terminal-backend 'vterm) ; or 'ghostel
 (setq workset-vterm-buffer-name-format "*workset: %r/%t<%n>*")
 (setq workset-branch-prefix "eric/")
 (setq workset-start-point "HEAD")
@@ -147,6 +148,14 @@ so custom patterns are preserved.
 - `M-x workset-open` switches to an existing workset
 - `M-x workset-vterm` opens an additional terminal for a selected active workset
 - `M-x workset-vterm-here` opens a new terminal for the current workset or repo directory
+
+To use Ghostel instead of vterm for newly-created terminals:
+
+```elisp
+(setq workset-terminal-backend 'ghostel)
+```
+
+Existing workset commands and buffer naming continue to work; `vterm` remains the default.
 - `M-x workset-switch-to-buffer` switches to a buffer associated with the current workset
 - `M-x workset-list` lists active worksets
 - `M-x workset-remove` removes a workset
